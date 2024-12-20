@@ -2,6 +2,7 @@
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <unordered_map>
 
 #ifndef MAKER_FLAGS
 #define MAKER_FLAGS "-Oz -fno-rtti -fno-exceptions"
@@ -20,7 +21,6 @@
  */
 
 namespace maker {
-class Rule;
 
 template<std::size_t size, typename CharT = char, typename Traits = std::char_traits<CharT>>
 class Cmd_Builder {
@@ -74,26 +74,38 @@ class Cmd_Builder {
 
 template<std::size_t size>
 struct Rule {
+  private:
+    std::size_t idx;
+  public:
     std::array<std::string, size> deps;
     std::string target;
     std::string cmd;
     bool phony;
 
+    template<>
+    constexpr Rule(const Rule<size> &other)
+        : idx()
+        , deps(other.deps)
+        , target(other.target)
+        , cmd(other.cmd)
+        , phony(other.phony)
+    {}
     constexpr Rule(std::string &&t)
-        : deps()
+        : idx()
+        , deps()
         , target(t)
         , cmd()
         , phony(false)
     {}
-    template<typename... Args, typename = std::enable_if_t<(std::is_same_v<Args, std::string> && ...)>>
+    template<typename... Args>
     constexpr Rule(std::string &&t, Args... args)
-        : deps()
+        : idx()
+        , deps()
         , target(t)
         , cmd()
         , phony(false)
     {
         static_assert(sizeof...(args) <= size, "Too many arguments for Rule");
-        size_t idx = deps.size();
         std::string strs[] = {args...};
         for (auto &s : strs) {
             if (idx < size) {
@@ -103,6 +115,28 @@ struct Rule {
     }
 };
 
+namespace {
+
+struct Tree_Node {
+    std::string target;
+    std::vector<std::string> deps;
+};
+
 }
 
-#undef TOO_MANY_ARGS
+/*
+ * check dates
+ * rebuild
+ */
+
+class Maker {
+    std::vector<Tree_Node> nodes;
+    std::unordered_map<std::string, Rule> rules;
+
+  public:
+    constexpr Maker()
+        : rules()
+    {}
+};
+
+}
