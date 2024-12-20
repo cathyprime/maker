@@ -22,7 +22,7 @@
 namespace maker {
 class Rule;
 
-template<int size, typename CharT = char, typename Traits = std::char_traits<CharT>>
+template<std::size_t size, typename CharT = char, typename Traits = std::char_traits<CharT>>
 class Cmd_Builder {
     using StringType = std::basic_string<CharT, Traits>;
     std::array<StringType, size> m_cmd;
@@ -31,28 +31,34 @@ class Cmd_Builder {
   public:
     constexpr Cmd_Builder() = default;
 
-    template <typename... Args>
-    constexpr Cmd_Builder(Args... args)
+    template <typename... Args, typename = std::enable_if_t<(std::is_convertible_v<Args, StringType> && ...)>>
+    constexpr Cmd_Builder(Args... args) noexcept
         : m_cmd()
         , m_idx(0)
     {
-        std::string strs[] = {args...};
+        static_assert(sizeof...(args) <= size, "Too many arguments for Cmd_Builder");
+        StringType strs[] = {args...};
         for (auto &s : strs) {
             m_cmd[m_idx++] = std::move(s);
         }
     }
-    template<typename... Args>
+    template<typename... Args, typename = std::enable_if_t<(std::is_convertible_v<Args, StringType> && ...)>>
     constexpr Cmd_Builder &push(Args... args) noexcept
     {
-        std::string strs[] = {args...};
+        static_assert(sizeof...(args) <= size, "Too many arguments for Cmd_Builder");
+        StringType strs[] = {args...};
         for (auto &s : strs) {
-            m_cmd[m_idx++] = std::move(s);
+            if (m_idx < size) {
+                m_cmd[m_idx++] = std::move(s);
+            }
         }
         return *this;
     }
     constexpr Cmd_Builder &push(StringType &&s) noexcept
     {
-        m_cmd[m_idx++] = std::move(s);
+        if (m_idx < size) {
+            m_cmd[m_idx++] = std::move(s);
+        }
         return *this;
     }
     [[nodiscard]] constexpr std::string build() const noexcept
@@ -66,27 +72,37 @@ class Cmd_Builder {
     }
 };
 
-class Rule {
-    std::vector<std::string> deps;
+template<std::size_t size>
+struct Rule {
+    std::array<std::string, size> deps;
     std::string target;
     std::string cmd;
     bool phony;
 
-    Recipe() = default;
-    bool is_up_to_date()
+    constexpr Rule(std::string &&t)
+        : deps()
+        , target(t)
+        , cmd()
+        , phony(false)
+    {}
+    template<typename... Args, typename = std::enable_if_t<(std::is_same_v<Args, std::string> && ...)>>
+    constexpr Rule(std::string &&t, Args... args)
+        : deps()
+        , target(t)
+        , cmd()
+        , phony(false)
     {
-        for (const auto &dep : dependencies)
-        if (!dep.is_up_to_date())
-            return false;
-
-        return true;
-    }
-    void rebuild()
-    {
-        if (is_up_to_date()) {
-            // TODO: run cmd
+        static_assert(sizeof...(args) <= size, "Too many arguments for Rule");
+        size_t idx = deps.size();
+        std::string strs[] = {args...};
+        for (auto &s : strs) {
+            if (idx < size) {
+                deps[idx++] = std::move(s);
+            }
         }
     }
 };
 
 }
+
+#undef TOO_MANY_ARGS
