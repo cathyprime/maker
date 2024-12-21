@@ -1,23 +1,25 @@
 #include <array>
+#include <vector>
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <filesystem>
+#include <string_view>
 #include <unordered_map>
 
 #ifndef MAKER_FLAGS
 #define MAKER_FLAGS "-Oz -fno-rtti -fno-exceptions"
 #endif
 
+#define INF(mess) std::cerr << "[INFO]: " << mess << '\n'
+#define WRN(mess) std::cerr << "[WARN]: " << mess << '\n'
+#define ERR(mess) std::cerr << "[ERROR]: " << mess << '\n'
+
 /*
  * TODO
- * compilation rules
- * constant definitions
  * progress feedback
  * auto clean rule
  * default rule
- * -fno-rtti
- * -fno-exceptions
- * -Oz
  */
 
 namespace maker {
@@ -72,71 +74,149 @@ class Cmd_Builder {
     }
 };
 
-template<std::size_t size>
 struct Rule {
-  private:
-    std::size_t idx;
-  public:
-    std::array<std::string, size> deps;
+    std::vector<std::string> deps;
     std::string target;
     std::string cmd;
     bool phony;
 
-    template<>
-    constexpr Rule(const Rule<size> &other)
-        : idx()
-        , deps(other.deps)
+    Rule()
+        : deps()
+        , target()
+        , cmd()
+        , phony(false)
+    {}
+    Rule(const Rule &other)
+        : deps(other.deps)
         , target(other.target)
         , cmd(other.cmd)
         , phony(other.phony)
     {}
-    constexpr Rule(std::string &&t)
-        : idx()
-        , deps()
+    Rule(std::string &&t)
+        : deps()
         , target(t)
         , cmd()
         , phony(false)
     {}
     template<typename... Args>
-    constexpr Rule(std::string &&t, Args... args)
-        : idx()
-        , deps()
+    Rule(std::string &&t, Args... args)
+        : deps()
         , target(t)
         , cmd()
         , phony(false)
     {
-        static_assert(sizeof...(args) <= size, "Too many arguments for Rule");
         std::string strs[] = {args...};
         for (auto &s : strs) {
-            if (idx < size) {
-                deps[idx++] = std::move(s);
-            }
+            deps.push_back(std::move(s));
         }
+    }
+    bool is_target_older()
+    {
+        auto target_file = std::filesystem::path(target);
+        for (const auto &dep: deps) {
+            auto dep_file = std::filesystem::path(dep);
+            if (std::filesystem::last_write_time(dep_file) > std::filesystem::last_write_time(target))
+                return true;
+        }
+        return false;
     }
 };
 
 namespace {
 
 struct Tree_Node {
-    std::string target;
-    std::vector<std::string> deps;
+    Rule *rule;
+    std::vector<Tree_Node*> deps;
+    bool visited;
+
+    Tree_Node()
+        : rule(nullptr)
+        , deps()
+        , visited(false)
+    {}
+
+    Tree_Node(Rule* rule)
+        : rule(rule)
+        , deps()
+        , visited(false)
+    {}
 };
+
+struct Tree {
+    std::vector<Tree_Node> nodes;
+
+    Tree_Node *add_node()
+    {
+        nodes.emplace_back();
+        return &nodes.back();
+    }
+    Tree_Node *add_node(Rule *rule)
+    {
+        nodes.emplace_back(rule);
+        return &nodes.back();
+    }
+};
+
+void print_nodes(const maker::Tree_Node *node, size_t depth = 0) {
+    if (!node || !node->rule) {
+        std::cout << std::string(depth * 2, ' ') << "Node without rule\n";
+        return;
+    }
+
+    // Print the current node
+    std::cout << std::string(depth * 2, ' ') << "Target: " << node->rule->target 
+              << ", Phony: " << (node->rule->phony ? "true" : "false")
+              << ", Visited: " << (node->visited ? "true" : "false") << '\n';
+
+    // Print dependencies
+    for (const auto &dep : node->deps) {
+        print_nodes(dep, depth + 1);
+    }
+}
 
 }
 
-/*
- * check dates
- * rebuild
- */
-
 class Maker {
-    std::vector<Tree_Node> nodes;
+    public:
     std::unordered_map<std::string, Rule> rules;
 
+    void recursive_build(Tree *tree, size_t node_idx)
+    {
+        Tree_Node *node = &tree->nodes[node_idx];
+        if (tree->nodes[node_idx].visited) return;
+        node->visited = true;
+
+        for (const auto &dep: node->rule->deps) {
+            Tree_Node *new_node = tree->add_node();
+            Tree_Node *node = &tree->nodes[node_idx];
+
+            if (rules.find(dep) == rules.end()) {
+                ERR("rule " << dep << " not found");
+                return;
+            }
+            new_node->rule = &rules[dep];
+            node->deps.push_back(new_node);
+            recursive_build(tree, tree->nodes.size() - 1);
+        }
+    }
+
   public:
-    constexpr Maker()
+    Maker()
         : rules()
     {}
+
+    void operator()(const std::string &target)
+    {
+        Tree tree;
+        if (rules.find(target) == rules.end()) {
+            ERR("rule " << target << " not found");
+            return;
+        }
+        Rule *rule = &rules[target];
+        (void)tree.add_node(rule);
+        recursive_build(&tree, tree.nodes.size() - 1);
+        print_nodes(&tree.nodes[0]);
+    }
 };
 
 }
