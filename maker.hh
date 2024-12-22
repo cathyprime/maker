@@ -1,10 +1,10 @@
 #include <array>
 #include <vector>
 #include <string>
-#include <sstream>
+#include <future>
+#include <cstdlib>
 #include <iostream>
 #include <filesystem>
-#include <string_view>
 #include <unordered_map>
 
 #ifndef MAKER_FLAGS
@@ -98,6 +98,26 @@ struct Rule {
         , cmd()
         , phony(false)
     {}
+
+    template<typename... Args>
+    static Rule with_deps(std::string &&target, Args... args)
+    {
+        return Rule(std::forward<std::string>(target), args...);
+    }
+
+    bool is_target_older()
+    {
+        auto target_file = std::filesystem::path(target);
+        for (const auto &dep: deps) {
+            auto dep_file = std::filesystem::path(dep);
+            if (!std::filesystem::exists(target)
+                || std::filesystem::last_write_time(dep_file) > std::filesystem::last_write_time(target))
+                return true;
+        }
+        return false;
+    }
+
+  private:
     template<typename... Args>
     Rule(std::string &&t, Args... args)
         : deps()
@@ -109,16 +129,6 @@ struct Rule {
         for (auto &s : strs) {
             deps.push_back(std::move(s));
         }
-    }
-    bool is_target_older()
-    {
-        auto target_file = std::filesystem::path(target);
-        for (const auto &dep: deps) {
-            auto dep_file = std::filesystem::path(dep);
-            if (std::filesystem::last_write_time(dep_file) > std::filesystem::last_write_time(target))
-                return true;
-        }
-        return false;
     }
 };
 
@@ -157,50 +167,94 @@ struct Tree {
     }
 };
 
-void print_nodes(const maker::Tree_Node *node, size_t depth = 0) {
-    if (!node || !node->rule) {
-        std::cout << std::string(depth * 2, ' ') << "Node without rule\n";
-        return;
+struct Job {
+    std::vector<std::string> todo;
+
+    Job() = default;
+    Job(std::string &s)
+        : todo()
+    {
+        todo.push_back(s);
     }
 
-    // Print the current node
-    std::cout << std::string(depth * 2, ' ') << "Target: " << node->rule->target 
-              << ", Phony: " << (node->rule->phony ? "true" : "false")
-              << ", Visited: " << (node->visited ? "true" : "false") << '\n';
-
-    // Print dependencies
-    for (const auto &dep : node->deps) {
-        print_nodes(dep, depth + 1);
+    Job &operator+=(std::string &cmd)
+    {
+        todo.push_back(cmd);
+        return *this;
     }
-}
+
+    void print()
+    {
+        for (auto it = todo.begin(); it != todo.end(); ++it)
+        std::cout << this << ": " << *it << std::endl;
+    }
+
+    operator bool()
+    {
+        return !todo.empty();
+    }
+
+    bool operator()()
+    {
+        std::vector<std::future<int>> futures;
+
+        for (auto &it: todo) {
+            futures.push_back(std::async(std::launch::async, [=]() {
+                std::string str = {"[CMD]: "};
+                str += it + '\n';
+                std::cout << str;
+                return std::system(it.c_str());
+            }));
+        }
+
+        for (auto &it: futures) {
+            if (it.get() != 0) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+};
 
 }
 
-class Maker {
-    public:
+struct Maker {
     std::unordered_map<std::string, Rule> rules;
 
-    void recursive_build(Tree *tree, size_t node_idx)
+    void build_tree(Tree &tree, size_t node_idx)
     {
-        Tree_Node *node = &tree->nodes[node_idx];
-        if (tree->nodes[node_idx].visited) return;
+        Tree_Node *node = &tree.nodes[node_idx];
+        if (tree.nodes[node_idx].visited) return;
         node->visited = true;
 
         for (const auto &dep: node->rule->deps) {
-            Tree_Node *new_node = tree->add_node();
-            Tree_Node *node = &tree->nodes[node_idx];
+            if (rules.find(dep) == rules.end()) return;
 
-            if (rules.find(dep) == rules.end()) {
-                ERR("rule " << dep << " not found");
-                return;
-            }
-            new_node->rule = &rules[dep];
-            node->deps.push_back(new_node);
-            recursive_build(tree, tree->nodes.size() - 1);
+            Rule* rule = &rules[dep];
+
+            Tree_Node *new_node = tree.add_node();
+            tree.nodes[node_idx].deps.push_back(new_node);
+            new_node->rule = rule;
+            build_tree(tree, tree.nodes.size() - 1);
         }
     }
 
-  public:
+    bool recursive_rebuild(Tree &tree, const Tree_Node &current_node, std::vector<Job> &jobs)
+    {
+        Job job;
+        bool any_true = false;
+        for (const auto &dep: current_node.deps) {
+            if (recursive_rebuild(tree, *dep, jobs)) {
+                any_true = true;
+                job += dep->rule->cmd;
+            }
+        }
+
+        if (job) jobs.push_back(job);
+        return any_true || current_node.rule->phony || current_node.rule->is_target_older();
+    }
+
     Maker()
         : rules()
     {}
@@ -214,8 +268,18 @@ class Maker {
         }
         Rule *rule = &rules[target];
         (void)tree.add_node(rule);
-        recursive_build(&tree, tree.nodes.size() - 1);
-        print_nodes(&tree.nodes[0]);
+        build_tree(tree, 0);
+        std::vector<Job> jobs;
+
+        if (recursive_rebuild(tree, tree.nodes[0], jobs)) {
+            jobs.push_back(Job(tree.nodes[0].rule->cmd));
+        } else {
+            INF("nothing to be done for: '" << target << "'");
+        }
+
+        for (auto &it: jobs) {
+            it();
+        }
     }
 };
 
