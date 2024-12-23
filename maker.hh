@@ -3,6 +3,7 @@
 #include <string>
 #include <future>
 #include <cstdlib>
+#include <sstream>
 #include <iostream>
 #include <filesystem>
 #include <unordered_map>
@@ -17,9 +18,7 @@
 
 /*
  * TODO
- * progress feedback
  * auto clean rule
- * default rule
  */
 
 namespace maker {
@@ -195,16 +194,15 @@ struct Job {
         todo.push_back(s);
     }
 
+    size_t size()
+    {
+        return todo.size();
+    }
+
     Job &operator+=(std::string &cmd)
     {
         todo.push_back(cmd);
         return *this;
-    }
-
-    void print()
-    {
-        for (auto it = todo.begin(); it != todo.end(); ++it)
-        std::cout << this << ": " << *it << std::endl;
     }
 
     operator bool()
@@ -212,15 +210,18 @@ struct Job {
         return !todo.empty();
     }
 
-    bool operator()()
+    bool operator()(size_t &idx, size_t total)
     {
         std::vector<std::future<int>> futures;
 
         for (auto &it: todo) {
+            std::stringstream ss;
+            ss << "[" << ++idx;
+            ss << "/" << total;
+            ss << "]: " << it << '\n';
+            std::cout << ss.str();
+
             futures.push_back(std::async(std::launch::async, [=]() {
-                std::string str = {"[CMD]: "};
-                str += it + '\n';
-                std::cout << str;
                 return std::system(it.c_str());
             }));
         }
@@ -309,8 +310,14 @@ struct Maker {
             INF("nothing to be done for: '" << target << "'");
         }
 
+        size_t total = 0;
         for (auto &it: jobs) {
-            it();
+            total += it.size();
+        }
+
+        size_t count = 0;
+        for (auto &it: jobs) {
+            it(count, total);
         }
     }
 };
