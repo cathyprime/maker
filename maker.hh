@@ -99,10 +99,21 @@ struct Rule {
         , phony(false)
     {}
 
+    Rule &with_cmd(std::string &&c)
+    {
+        cmd = std::move(c);
+        return *this;
+    }
+
     template<typename... Args>
     static Rule with_deps(std::string &&target, Args... args)
     {
         return Rule(std::forward<std::string>(target), args...);
+    }
+
+    static Rule with_deps(std::string &&target, std::vector<std::string>&& v)
+    {
+        return Rule(std::forward<std::string>(target), std::forward<std::vector<std::string>>(v));
     }
 
     bool is_target_older()
@@ -118,10 +129,17 @@ struct Rule {
     }
 
   private:
+    Rule(std::string &&t, std::vector<std::string>&& v)
+        : deps(std::move(v))
+        , target(std::move(t))
+        , cmd()
+        , phony(false)
+    {}
+
     template<typename... Args>
     Rule(std::string &&t, Args... args)
         : deps()
-        , target(t)
+        , target(std::move(t))
         , cmd()
         , phony(false)
     {
@@ -220,6 +238,7 @@ struct Job {
 }
 
 struct Maker {
+  private:
     std::unordered_map<std::string, Rule> rules;
 
     void build_tree(Tree &tree, size_t node_idx)
@@ -255,9 +274,22 @@ struct Maker {
         return any_true || current_node.rule->phony || current_node.rule->is_target_older();
     }
 
+  public:
     Maker()
         : rules()
     {}
+
+    Maker &operator+=(Rule &rule)
+    {
+        rules[rule.target] = rule;
+        return *this;
+    }
+
+    Maker &operator,(Rule &rule)
+    {
+        rules[rule.target] = rule;
+        return *this;
+    }
 
     void operator()(const std::string &target)
     {
