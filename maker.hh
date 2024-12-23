@@ -111,15 +111,16 @@ struct Rule {
     {
         if (!std::filesystem::exists(target))
             return true;
-
         if (std::filesystem::is_directory(target))
             return false;
 
         auto target_mod_time = std::filesystem::last_write_time(target);
-
         for (const auto &dep: deps) {
             if (!std::filesystem::exists(dep))
                 return true;
+
+            if (std::filesystem::is_directory(dep))
+                continue;
 
             auto dependency_mod_time = std::filesystem::last_write_time(dep);
             if (dependency_mod_time > target_mod_time)
