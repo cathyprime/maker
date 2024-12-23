@@ -62,7 +62,7 @@ class Cmd_Builder {
         }
         return *this;
     }
-    [[nodiscard]] constexpr std::string build() const noexcept
+    [[nodiscard]] std::string build() const noexcept
     {
         std::string result = m_cmd[0];
 
