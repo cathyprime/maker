@@ -291,7 +291,9 @@ struct Maker {
         bool run_once = false;
         for (const auto &it: rules) {
             if (!it.second.phony) {
-                if (!std::filesystem::exists(it.first))
+                if (!std::filesystem::exists(it.second.target))
+                    continue;
+                if (std::filesystem::is_directory(it.second.target))
                     continue;
                 run_once = true;
                 std::string cmd = "rm -r ";
