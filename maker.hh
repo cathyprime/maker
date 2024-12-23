@@ -5,8 +5,10 @@
 #include <cstdlib>
 #include <sstream>
 #include <iostream>
+#include <algorithm>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 
 #ifndef MAKER_FLAGS
 #define MAKER_FLAGS "-Oz -fno-rtti -fno-exceptions"
@@ -15,11 +17,6 @@
 #define INF(mess) std::cerr << "[INFO]: " << mess << '\n'
 #define WRN(mess) std::cerr << "[WARN]: " << mess << '\n'
 #define ERR(mess) std::cerr << "[ERROR]: " << mess << '\n'
-
-/*
- * TODO
- * auto clean rule
- */
 
 namespace maker {
 
@@ -104,56 +101,57 @@ struct Rule {
         return *this;
     }
 
-    template<typename... Args>
-    static Rule with_deps(std::string &&target, Args... args)
+    Rule &with_cmd(const std::string &c)
     {
-        return Rule(std::forward<std::string>(target), args...);
+        cmd = c;
+        return *this;
     }
 
-    static Rule with_deps(std::string &&target, std::vector<std::string>&& v)
+    bool should_rebuild()
     {
-        return Rule(std::forward<std::string>(target), std::forward<std::vector<std::string>>(v));
-    }
+        if (!std::filesystem::exists(target))
+            return true;
 
-    bool is_target_older()
-    {
-        auto target_file = std::filesystem::path(target);
+        if (std::filesystem::is_directory(target))
+            return false;
+
+        auto target_mod_time = std::filesystem::last_write_time(target);
+
         for (const auto &dep: deps) {
-            auto dep_file = std::filesystem::path(dep);
-            if (!std::filesystem::exists(target)
-                || std::filesystem::last_write_time(dep_file) > std::filesystem::last_write_time(target))
+            if (!std::filesystem::exists(dep))
+                return true;
+
+            auto dependency_mod_time = std::filesystem::last_write_time(dep);
+            if (dependency_mod_time > target_mod_time)
                 return true;
         }
         return false;
     }
 
-  private:
-    Rule(std::string &&t, std::vector<std::string>&& v)
+    template<typename T,
+             typename = std::enable_if<std::is_same<std::decay_t<T>, std::string>::value>>
+    Rule(T &&t, std::vector<std::string>&& v)
         : deps(std::move(v))
-        , target(std::move(t))
+        , target(std::forward<T>(t))
         , cmd()
         , phony(false)
     {}
 
-    template<typename... Args>
-    Rule(std::string &&t, Args... args)
-        : deps()
-        , target(std::move(t))
+    template<typename T,
+             typename = std::enable_if<std::is_same<std::decay_t<T>, std::string>::value>>
+    Rule(T &&t, std::vector<std::string> &vec)
+        : deps(vec)
+        , target(std::forward<T>(t))
         , cmd()
         , phony(false)
-    {
-        std::string strs[] = {args...};
-        for (auto &s : strs) {
-            deps.push_back(std::move(s));
-        }
-    }
+    {}
 };
 
 namespace {
 
 struct Tree_Node {
     Rule *rule;
-    std::vector<Tree_Node*> deps;
+    std::vector<size_t> deps;
     bool visited;
 
     Tree_Node()
@@ -172,15 +170,19 @@ struct Tree_Node {
 struct Tree {
     std::vector<Tree_Node> nodes;
 
-    Tree_Node *add_node()
+    Tree_Node &operator[](size_t idx)
+    {
+        return nodes[idx];
+    }
+    size_t add_node()
     {
         nodes.emplace_back();
-        return &nodes.back();
+        return nodes.size() - 1;
     }
-    Tree_Node *add_node(Rule *rule)
+    size_t add_node(Rule *rule)
     {
         nodes.emplace_back(rule);
-        return &nodes.back();
+        return nodes.size() - 1;
     }
 };
 
@@ -221,7 +223,7 @@ struct Job {
             ss << "]: " << it << '\n';
             std::cout << ss.str();
 
-            futures.push_back(std::async(std::launch::async, [=]() {
+            futures.push_back(std::async(std::launch::async, [&]() {
                 return std::system(it.c_str());
             }));
         }
@@ -239,7 +241,7 @@ struct Job {
 }
 
 struct Maker {
-  private:
+  // private:
     std::unordered_map<std::string, Rule> rules;
 
     void build_tree(Tree &tree, size_t node_idx)
@@ -249,30 +251,57 @@ struct Maker {
         node->visited = true;
 
         for (const auto &dep: node->rule->deps) {
-            if (rules.find(dep) == rules.end()) return;
+            if (rules.find(dep) == rules.end()) continue;
 
             Rule* rule = &rules[dep];
 
-            Tree_Node *new_node = tree.add_node();
-            tree.nodes[node_idx].deps.push_back(new_node);
-            new_node->rule = rule;
-            build_tree(tree, tree.nodes.size() - 1);
+            size_t new_node_idx = tree.add_node();
+            Tree_Node &new_node = tree[new_node_idx];
+            tree.nodes[node_idx].deps.push_back(new_node_idx);
+            new_node.rule = rule;
+            if (!(tree.nodes[node_idx].rule->target == dep))
+                build_tree(tree, tree.nodes.size() - 1);
         }
     }
 
-    bool recursive_rebuild(Tree &tree, const Tree_Node &current_node, std::vector<Job> &jobs)
+    bool recursive_rebuild(Tree &tree, size_t current_idx, std::vector<Job> &jobs)
     {
         Job job;
         bool any_true = false;
+        static std::unordered_set<std::string> seen_commands;
+        Tree_Node &current_node = tree[current_idx];
+
         for (const auto &dep: current_node.deps) {
-            if (recursive_rebuild(tree, *dep, jobs)) {
+            if (recursive_rebuild(tree, dep, jobs)) {
                 any_true = true;
-                job += dep->rule->cmd;
+                if (seen_commands.find(tree[dep].rule->cmd) == seen_commands.end()) {
+                    seen_commands.insert(tree[dep].rule->cmd);
+                    job += tree[dep].rule->cmd;
+                }
             }
         }
 
         if (job) jobs.push_back(job);
-        return any_true || current_node.rule->phony || current_node.rule->is_target_older();
+        return any_true || current_node.rule->phony || current_node.rule->should_rebuild();
+    }
+
+    void clean()
+    {
+        bool run_once = false;
+        for (const auto &it: rules) {
+            if (!it.second.phony) {
+                if (!std::filesystem::exists(it.first))
+                    continue;
+                run_once = true;
+                std::string cmd = "rm -r ";
+                cmd += it.first;
+                INF(cmd);
+                std::system(cmd.c_str());
+            }
+        }
+        if (!run_once) {
+            INF("Already spotless clean...");
+        }
     }
 
   public:
@@ -294,6 +323,11 @@ struct Maker {
 
     void operator()(const std::string &target)
     {
+        if (target == "clean") {
+            clean();
+            return;
+        }
+
         Tree tree;
         if (rules.find(target) == rules.end()) {
             ERR("rule " << target << " not found");
@@ -304,13 +338,15 @@ struct Maker {
         build_tree(tree, 0);
         std::vector<Job> jobs;
 
-        if (recursive_rebuild(tree, tree.nodes[0], jobs)) {
+        if (recursive_rebuild(tree, 0, jobs)) {
             jobs.push_back(Job(tree.nodes[0].rule->cmd));
         } else {
-            INF("nothing to be done for: '" << target << "'");
+            INF("nothing to be done for '" << target << "'");
+            return;
         }
 
         size_t total = 0;
+        size_t i = 0;
         for (auto &it: jobs) {
             total += it.size();
         }
