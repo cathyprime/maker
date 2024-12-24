@@ -34,9 +34,10 @@ struct Rule {
         , cmd()
         , phony(false)
     {}
-    Rule(std::string &&t)
+    template<typename S, typename = std::enable_if<std::is_same<std::decay_t<S>, std::string>::value>>
+    Rule(S &&t)
         : deps()
-        , target(t)
+        , target(std::forward<S>(t))
         , cmd()
         , phony(false)
     {}
@@ -260,9 +261,11 @@ struct Maker {
         : rules()
     {}
 
-    Maker &operator+=(Rule &rule)
+    template<typename R,
+             typename = std::enable_if<std::is_same<std::decay_t<R>, Rule>::value>>
+    Maker &operator+=(R &&rule)
     {
-        rules[rule.target] = rule;
+        rules[rule.target] = std::forward<R>(rule);
         return *this;
     }
 
