@@ -310,7 +310,7 @@ struct Maker {
 
 }
 
-#define __MAKER_BUILD                                                 \
+#define __MAKER_BUILD(compiler, argc, argv, execpath, filename)       \
 INF("New recipe detected, rebuilding...");                            \
 std::string cmd;                                                      \
 cmd += std::string(compiler) + " -o ";                                \
@@ -336,7 +336,7 @@ if(result == 0) {                                                     \
         auto exec_time = std::filesystem::last_write_time(execpath);  \
         auto file_time = std::filesystem::last_write_time(filename);  \
         if (file_time > exec_time) {                                  \
-            __MAKER_BUILD                                             \
+            __MAKER_BUILD(compiler, argc, argv, execpath, filename)   \
         }                                                             \
     } while(0);
 #else
@@ -345,6 +345,6 @@ if(result == 0) {                                                     \
     do {                                                              \
         std::string filename = __FILE__;                              \
         std::filesystem::path execpath = shift(argc, argv);           \
-        __MAKER_BUILD                                                 \
+        __MAKER_BUILD(compiler, argc, argv, execpath, filename)       \
     } while(0);
 #endif
