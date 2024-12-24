@@ -359,7 +359,25 @@ struct Maker {
 
 }
 
+#define __MAKER_BUILD                                                 \
+INF("New recipe detected, rebuilding...");                            \
+std::string cmd;                                                      \
+cmd += std::string(compiler) + " -o ";                                \
+cmd += "'" + execpath.string() + "' ";                                \
+cmd += filename + ' ';                                                \
+cmd += std::string(MAKER_FLAGS) + ' ';                                \
+cmd += "-D_MAKER_OPTIMIZED";                                          \
+int result = std::system(cmd.c_str());                                \
+if(result == 0) {                                                     \
+    INF("compiled successfully! Restarting...");                      \
+    execv(execpath.string().c_str(), --argv);                         \
+} else {                                                              \
+    ERR("Compilation failed, fix errors and try again!");             \
+    return result;                                                    \
+}
+
 #ifdef _MAKER_OPTIMIZED
+#include <unistd.h>
 #define GO_REBUILD_YOURSELF(compiler, argc, argv)                     \
     do {                                                              \
         std::string filename = __FILE__;                              \
@@ -367,43 +385,15 @@ struct Maker {
         auto exec_time = std::filesystem::last_write_time(execpath);  \
         auto file_time = std::filesystem::last_write_time(filename);  \
         if (file_time > exec_time) {                                  \
-            INF("New recipe detected, rebuilding...");                \
-            std::string cmd;                                          \
-            cmd += std::string(compiler) + " -o ";                    \
-            cmd += "'" + execpath.string() + "' ";                    \
-            cmd += filename + ' ';                                    \
-            cmd += std::string(MAKER_FLAGS) + ' ';                    \
-            cmd += "-D_MAKER_OPTIMIZED";                              \
-            int result = std::system(cmd.c_str());                    \
-            if(result == 0) {                                         \
-                INF("compiled successfully! Restarting...");          \
-                execv(execpath.string().c_str(), --argv);             \
-            } else {                                                  \
-                ERR("Compilation failed, fix errors and try again!"); \
-                return result;                                        \
-            }                                                         \
+            __MAKER_BUILD                                             \
         }                                                             \
     } while(0);
 #else
+#include <unistd.h>
 #define GO_REBUILD_YOURSELF(compiler, argc, argv)                     \
     do {                                                              \
         std::string filename = __FILE__;                              \
         std::filesystem::path execpath = shift(argc, argv);           \
-        INF("First run detected, optimizing...");                     \
-        std::string cmd;                                              \
-        cmd += std::string(compiler) + " -o ";                        \
-        cmd += "'" + execpath.string() + "' ";                        \
-        cmd += filename + ' ';                                        \
-        cmd += std::string(MAKER_FLAGS) + ' ';                        \
-        cmd += "-D_MAKER_OPTIMIZED";                                  \
-        std::cout << "[CMD]: " << cmd << std::endl;                   \
-        int result = std::system(cmd.c_str());                        \
-        if(result == 0) {                                             \
-            INF("compiled successfully! Restarting...");              \
-            execv(execpath.string().c_str(), --argv);                 \
-        } else {                                                      \
-            ERR("Compilation failed, fix errors and try again!");     \
-            return result;                                            \
-        }                                                             \
+        __MAKER_BUILD                                                 \
     } while(0);
 #endif
