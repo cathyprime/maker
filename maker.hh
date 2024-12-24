@@ -17,6 +17,7 @@
 #define INF(mess) std::cerr << "[INFO]: " << mess << '\n'
 #define WRN(mess) std::cerr << "[WARN]: " << mess << '\n'
 #define ERR(mess) std::cerr << "[ERROR]: " << mess << '\n'
+#define CMD(mess) std::cerr << "[CMD]: " << mess << '\n'
 #define shift(argc, argv) (argc--, *argv++)
 
 namespace maker {
@@ -245,7 +246,7 @@ struct Maker {
                 run_once = true;
                 std::string cmd = "rm -r ";
                 cmd += it.first;
-                INF(cmd);
+                CMD(cmd);
                 std::system(cmd.c_str());
             }
         }
