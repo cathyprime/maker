@@ -1,5 +1,6 @@
 #include "../maker.hh"
 #include <sstream>
+#include <unistd.h>
 
 const std::string out_dir = "out/";
 const std::string build_dir = "build/";
@@ -7,10 +8,10 @@ const std::string compiler = "g++ ";
 
 using namespace maker;
 
-#define shift(argc, argv) (argc--, *argv++)
-
 int main(int argc, char **argv)
 {
+    GO_REBUILD_YOURSELF("g++", argc, argv);
+
     Maker mk;
 
     std::string files[3] = {
@@ -20,7 +21,7 @@ int main(int argc, char **argv)
     std::vector<std::string> main_deps;
     for (const auto &it: files) {
         std::string name = build_dir + it;
-        mk += Rule(name + ".o", { it + ".cc", build_dir })
+        mk += Rule(name + ".o", { it + ".cc", it + ".hh", build_dir })
             .with_cmd(compiler + "-c " + it + ".cc -o " + name + ".o");
         main_deps.push_back(name + ".o");
     }
@@ -43,10 +44,9 @@ int main(int argc, char **argv)
         Rule(main_name, { main_deps })
               .with_cmd(main_cmd.str());
 
-    if (argc <= 1) {
+    if (argc <= 0) {
         mk(main_name);
     } else {
-        (void)shift(argc, argv);
         mk(shift(argc, argv));
     }
 }

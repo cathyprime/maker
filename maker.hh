@@ -11,12 +11,13 @@
 #include <unordered_set>
 
 #ifndef MAKER_FLAGS
-#define MAKER_FLAGS "-Oz -fno-rtti -fno-exceptions"
+#define MAKER_FLAGS "-Oz -fno-rtti -fno-exceptions -Wall -Wextra -march=native -s -Werror -Wpedantic"
 #endif
 
 #define INF(mess) std::cerr << "[INFO]: " << mess << '\n'
 #define WRN(mess) std::cerr << "[WARN]: " << mess << '\n'
 #define ERR(mess) std::cerr << "[ERROR]: " << mess << '\n'
+#define shift(argc, argv) (argc--, *argv++)
 
 namespace maker {
 
@@ -81,12 +82,6 @@ struct Rule {
         , target()
         , cmd()
         , phony(false)
-    {}
-    Rule(const Rule &other)
-        : deps(other.deps)
-        , target(other.target)
-        , cmd(other.cmd)
-        , phony(other.phony)
     {}
     Rule(std::string &&t)
         : deps()
@@ -275,6 +270,8 @@ struct Maker {
         for (const auto &dep: current_node.deps) {
             if (recursive_rebuild(tree, dep, jobs)) {
                 any_true = true;
+                if (tree[dep].rule->cmd.empty())
+                    continue;
                 if (seen_commands.find(tree[dep].rule->cmd) == seen_commands.end()) {
                     seen_commands.insert(tree[dep].rule->cmd);
                     job += tree[dep].rule->cmd;
@@ -349,7 +346,6 @@ struct Maker {
         }
 
         size_t total = 0;
-        size_t i = 0;
         for (auto &it: jobs) {
             total += it.size();
         }
@@ -362,3 +358,52 @@ struct Maker {
 };
 
 }
+
+#ifdef _MAKER_OPTIMIZED
+#define GO_REBUILD_YOURSELF(compiler, argc, argv)                     \
+    do {                                                              \
+        std::string filename = __FILE__;                              \
+        std::filesystem::path execpath = shift(argc, argv);           \
+        auto exec_time = std::filesystem::last_write_time(execpath);  \
+        auto file_time = std::filesystem::last_write_time(filename);  \
+        if (file_time > exec_time) {                                  \
+            INF("New recipe detected, rebuilding...");                \
+            std::string cmd;                                          \
+            cmd += std::string(compiler) + " -o ";                    \
+            cmd += "'" + execpath.string() + "' ";                    \
+            cmd += filename + ' ';                                    \
+            cmd += std::string(MAKER_FLAGS) + ' ';                    \
+            cmd += "-D_MAKER_OPTIMIZED";                              \
+            int result = std::system(cmd.c_str());                    \
+            if(result == 0) {                                         \
+                INF("compiled successfully! Restarting...");          \
+                execv(execpath.string().c_str(), --argv);             \
+            } else {                                                  \
+                ERR("Compilation failed, fix errors and try again!"); \
+                return result;                                        \
+            }                                                         \
+        }                                                             \
+    } while(0);
+#else
+#define GO_REBUILD_YOURSELF(compiler, argc, argv)                     \
+    do {                                                              \
+        std::string filename = __FILE__;                              \
+        std::filesystem::path execpath = shift(argc, argv);           \
+        INF("First run detected, optimizing...");                     \
+        std::string cmd;                                              \
+        cmd += std::string(compiler) + " -o ";                        \
+        cmd += "'" + execpath.string() + "' ";                        \
+        cmd += filename + ' ';                                        \
+        cmd += std::string(MAKER_FLAGS) + ' ';                        \
+        cmd += "-D_MAKER_OPTIMIZED";                                  \
+        std::cout << "[CMD]: " << cmd << std::endl;                   \
+        int result = std::system(cmd.c_str());                        \
+        if(result == 0) {                                             \
+            INF("compiled successfully! Restarting...");              \
+            execv(execpath.string().c_str(), --argv);                 \
+        } else {                                                      \
+            ERR("Compilation failed, fix errors and try again!");     \
+            return result;                                            \
+        }                                                             \
+    } while(0);
+#endif
