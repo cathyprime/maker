@@ -43,11 +43,16 @@ template<typename S, typename = isString<S>>
 constexpr Cmd from_string(S &&str)
 {
     Cmd cmd;
-    cmd.func = [=](){
+    cmd.func = [=]() {
         return std::system(str.c_str());
     };
     cmd.description = std::forward<S>(str);
     return cmd;
+}
+
+Cmd from_string(const char *str)
+{
+    return from_string(std::string(str));
 }
 
 struct Rule {
@@ -289,9 +294,10 @@ struct Maker {
         return *this;
     }
 
-    Maker &operator,(Rule &rule)
+    template<typename R, typename = isU<R, Rule>>
+    Maker &operator,(R &&rule)
     {
-        rules[rule.target] = rule;
+        rules[rule.target] = std::forward<R>(rule);
         return *this;
     }
 
