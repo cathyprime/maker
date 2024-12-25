@@ -3,15 +3,16 @@
 #include <string>
 #include <future>
 #include <cstdlib>
-#include <sstream>
 #include <iostream>
+#include <optional>
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
 #ifndef MAKER_FLAGS
-#define MAKER_FLAGS "-Oz -fno-rtti -fno-exceptions -Wall -Wextra -march=native -s -Werror -Wpedantic"
+#define MAKER_FLAGS "-Wfatal-errors -Oz -fno-rtti -fno-exceptions -Wall -Wextra -march=native -s -Werror -Wpedantic"
 #endif
 
 #define INF(mess) std::cerr << "[INFO]: " << mess << '\n'
@@ -22,35 +23,57 @@
 
 namespace maker {
 
+using cmd_t = std::function<int(void)>;
+
+struct Cmd {
+    cmd_t func;
+    std::string description;
+};
+
+template<typename T, typename U>
+using isU = std::enable_if<std::is_same<std::decay_t<T>, U>::value>;
+
+template<typename T>
+using isString = isU<T, std::string>;
+
+template<typename T>
+using isCmd = isU<T, Cmd>;
+
+template<typename S, typename = isString<S>>
+constexpr Cmd from_string(S &&str)
+{
+    Cmd cmd;
+    cmd.func = [=](){
+        return std::system(str.c_str());
+    };
+    cmd.description = std::forward<S>(str);
+    return cmd;
+}
+
 struct Rule {
+    std::optional<Cmd> cmd;
     std::vector<std::string> deps;
     std::string target;
-    std::string cmd;
     bool phony;
 
     Rule()
-        : deps()
+        : cmd()
+        , deps()
         , target()
-        , cmd()
         , phony(false)
     {}
-    template<typename S, typename = std::enable_if<std::is_same<std::decay_t<S>, std::string>::value>>
+    template<typename S, typename = isString<S>>
     Rule(S &&t)
-        : deps()
+        : cmd()
+        , deps()
         , target(std::forward<S>(t))
-        , cmd()
         , phony(false)
     {}
 
-    Rule &with_cmd(std::string &&c)
+    template<typename F, typename = isCmd<F>>
+    Rule &with_cmd(F &&c)
     {
-        cmd = std::move(c);
-        return *this;
-    }
-
-    Rule &with_cmd(const std::string &c)
-    {
-        cmd = c;
+        cmd = std::make_optional(std::forward<F>(c));
         return *this;
     }
 
@@ -76,21 +99,19 @@ struct Rule {
         return false;
     }
 
-    template<typename T,
-             typename = std::enable_if<std::is_same<std::decay_t<T>, std::string>::value>>
+    template<typename T, typename = isString<T>>
     Rule(T &&t, std::vector<std::string>&& v)
-        : deps(std::move(v))
+        : cmd()
+        , deps(std::move(v))
         , target(std::forward<T>(t))
-        , cmd()
         , phony(false)
     {}
 
-    template<typename T,
-             typename = std::enable_if<std::is_same<std::decay_t<T>, std::string>::value>>
+    template<typename T, typename = isString<T>>
     Rule(T &&t, std::vector<std::string> &vec)
-        : deps(vec)
+        : cmd()
+        , deps(vec)
         , target(std::forward<T>(t))
-        , cmd()
         , phony(false)
     {}
 };
@@ -135,10 +156,10 @@ struct Tree {
 };
 
 struct Job {
-    std::vector<std::string> todo;
+    std::vector<Cmd> todo;
 
     Job() = default;
-    Job(std::string &s)
+    Job(Cmd &s)
         : todo()
     {
         todo.push_back(s);
@@ -149,9 +170,10 @@ struct Job {
         return todo.size();
     }
 
-    Job &operator+=(std::string &cmd)
+    template<typename F, typename = isCmd<F>>
+    Job &operator+=(F &&cmd)
     {
-        todo.push_back(cmd);
+        todo.push_back(std::forward<F>(cmd));
         return *this;
     }
 
@@ -165,15 +187,13 @@ struct Job {
         std::vector<std::future<int>> futures;
 
         for (auto &it: todo) {
-            std::stringstream ss;
-            ss << "[" << ++idx;
-            ss << "/" << total;
-            ss << "]: " << it << '\n';
-            std::cout << ss.str();
+            std::string cmd;
+            cmd += "[" + std::to_string(++idx);
+            cmd += "/" + std::to_string(total);
+            cmd += "]: " + it.description + '\n';
+            std::cout << cmd;
 
-            futures.push_back(std::async(std::launch::async, [&]() {
-                return std::system(it.c_str());
-            }));
+            futures.push_back(std::async(std::launch::async, it.func));
         }
 
         for (auto &it: futures) {
@@ -222,11 +242,12 @@ struct Maker {
         for (const auto &dep: current_node.deps) {
             if (recursive_rebuild(tree, dep, jobs)) {
                 any_true = true;
-                if (tree[dep].rule->cmd.empty())
+                if (!tree[dep].rule->cmd)
                     continue;
-                if (seen_commands.find(tree[dep].rule->cmd) == seen_commands.end()) {
-                    seen_commands.insert(tree[dep].rule->cmd);
-                    job += tree[dep].rule->cmd;
+                if (seen_commands.find(tree[dep].rule->cmd->description) == seen_commands.end()) {
+                    seen_commands.insert(tree[dep].rule->cmd->description);
+                    if (tree[dep].rule->cmd)
+                    job += *(tree[dep].rule->cmd);
                 }
             }
         }
@@ -261,8 +282,7 @@ struct Maker {
         : rules()
     {}
 
-    template<typename R,
-             typename = std::enable_if<std::is_same<std::decay_t<R>, Rule>::value>>
+    template<typename R, typename = isU<R, Rule>>
     Maker &operator+=(R &&rule)
     {
         rules[rule.target] = std::forward<R>(rule);
@@ -293,7 +313,8 @@ struct Maker {
         std::vector<Job> jobs;
 
         if (recursive_rebuild(tree, 0, jobs)) {
-            jobs.push_back(Job(tree.nodes[0].rule->cmd));
+            if (tree.nodes[0].rule->cmd)
+                jobs.push_back(Job(*tree.nodes[0].rule->cmd));
         } else {
             INF("nothing to be done for '" << target << "'");
             return;
@@ -314,7 +335,6 @@ struct Maker {
 }
 
 #define __MAKER_BUILD(compiler, argc, argv, execpath, filename)       \
-INF("New recipe detected, rebuilding...");                            \
 std::string cmd;                                                      \
 cmd += std::string(compiler) + " -o ";                                \
 cmd += "'" + execpath.string() + "' ";                                \
@@ -339,6 +359,7 @@ if(result == 0) {                                                     \
         auto exec_time = std::filesystem::last_write_time(execpath);  \
         auto file_time = std::filesystem::last_write_time(filename);  \
         if (file_time > exec_time) {                                  \
+            INF("New recipe detected, rebuilding...");                \
             __MAKER_BUILD(compiler, argc, argv, execpath, filename)   \
         }                                                             \
     } while(0);
@@ -348,6 +369,7 @@ if(result == 0) {                                                     \
     do {                                                              \
         std::string filename = __FILE__;                              \
         std::filesystem::path execpath = shift(argc, argv);           \
+        INF("First run detected, optimizing...");                     \
         __MAKER_BUILD(compiler, argc, argv, execpath, filename)       \
     } while(0);
 #endif

@@ -21,7 +21,7 @@ int main(int argc, char **argv)
     for (const auto &it: files) {
         std::string name = build_dir + it;
         mk += Rule(name + ".o", { it + ".cc", it + ".hh", build_dir })
-            .with_cmd(compiler + "-c " + it + ".cc -o " + name + ".o");
+            .with_cmd(from_string(compiler + "-c " + it + ".cc -o " + name + ".o"));
         main_deps.push_back(name + ".o");
     }
 
@@ -36,12 +36,12 @@ int main(int argc, char **argv)
     }
 
     auto build_rule = Rule(build_dir, { build_dir });
-    build_rule.cmd = "mkdir -p " + build_dir;
+    build_rule.cmd = from_string("mkdir -p " + build_dir);
     build_rule.phony = false;
     mk += build_rule,
-        Rule(out_dir, { out_dir }).with_cmd("mkdir -p " + out_dir),
+        Rule(out_dir, { out_dir }).with_cmd(from_string("mkdir -p " + out_dir)),
         Rule(main_name, { main_deps })
-              .with_cmd(main_cmd.str());
+              .with_cmd(from_string(main_cmd.str()));
 
     if (argc <= 0) {
         mk(main_name);
