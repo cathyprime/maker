@@ -82,6 +82,12 @@ struct Rule {
         return *this;
     }
 
+    Rule &with_phony()
+    {
+        phony = true;
+        return *this;
+    }
+
     bool should_rebuild()
     {
         if (!std::filesystem::exists(target))
@@ -321,14 +327,16 @@ struct Maker {
         if (recursive_rebuild(tree, 0, jobs)) {
             if (tree.nodes[0].rule->cmd)
                 jobs.push_back(Job(*tree.nodes[0].rule->cmd));
-        } else {
-            INF("nothing to be done for '" << target << "'");
-            return;
         }
 
         size_t total = 0;
         for (auto &it: jobs) {
             total += it.size();
+        }
+
+        if (total == 0) {
+            INF("nothing to be done for '" << target << "'");
+            return;
         }
 
         size_t count = 0;
