@@ -3,6 +3,7 @@
 #include <string>
 #include <future>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <algorithm>
@@ -13,7 +14,7 @@
 #include <unordered_set>
 
 #ifndef MAKER_FLAGS
-#define MAKER_FLAGS "-Wfatal-errors -Oz -fno-rtti -fno-exceptions -Wall -Wextra -march=native -s -Werror -Wpedantic"
+#define MAKER_FLAGS "-std=c++17 -Wfatal-errors -Oz -fno-rtti -fno-exceptions -Wall -Wextra -march=native -s -Werror -Wpedantic"
 #endif
 
 #define INF(mess) std::cerr << "[INFO]: " << mess << '\n'
@@ -41,7 +42,7 @@ template<typename T>
 using isCmd = isU<T, Cmd>;
 
 template<typename S, typename = isString<S>>
-constexpr Cmd from_string(S &&str)
+Cmd from_string(S &&str)
 {
     Cmd cmd;
     cmd.func = [=]() {
@@ -354,7 +355,35 @@ struct Maker {
     }
 };
 
+namespace utils {
+
+inline std::vector<std::string> get_includes_from_file(std::filesystem::path filename)
+{
+    std::vector<std::string> results;
+    std::ifstream file(filename);
+
+    std::string line;
+    while (getline(file, line)) {
+        if (line.rfind("#include \"", 0) == 0) {
+            std::size_t start = line.find('"') + 1;
+            std::size_t end = line.find('"', start);
+            if (start != std::string::npos && end != std::string::npos) {
+                results.push_back(line.substr(start, end - start));
+            }
+        }
+    }
+    return results;
 }
+
+std::string get_compiler()
+{
+    char *compiler = std::getenv("CXX");
+    return compiler == nullptr ? "c++" : compiler;
+}
+
+}
+
+} // maker
 
 namespace maker { namespace __internal {
 
@@ -400,7 +429,7 @@ inline void go_rebuild_yourself(int *argc, char ***argv,
             INF("Compiled successfully!");
             std::string cmd = execpath.string();
             while (*argc > 0)
-                cmd += ' ' + shift(*argc, *argv);
+                cmd += ' ' + std::string(shift(*argc, *argv));
             std::exit(std::system(cmd.c_str()));
         } else {
             ERR("Compilation failed, fix errors and try again!");
@@ -413,8 +442,9 @@ inline void go_rebuild_yourself(int *argc, char ***argv,
 
 }} // namespace maker::__internal
 
-#define GO_REBUILD_YOURSELF(compiler, argc, argv)                                           \
+#define GO_REBUILD_YOURSELF(argc, argv)                                                     \
     do {                                                                                    \
+        std::string compiler = maker::utils::get_compiler();                                \
         std::string filename = __FILE__;                                                    \
         std::filesystem::path execpath = shift(argc, argv);                                 \
         maker::__internal::go_rebuild_yourself(&argc, &argv, compiler, execpath, filename); \
