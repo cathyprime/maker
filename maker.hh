@@ -99,13 +99,15 @@ struct Deps {
     template<typename IL, std::enable_if_t<isInitializerList<IL>, int> = 0>
     Deps& operator=(IL il)
     {
-        func = [=]() -> std::vector<std::string> { return std::vector<std::string>(il); };
+        func = [=]() -> std::vector<std::string> { return std::vector<std::string>( std::forward<IL>(il)); };
         return *this;
     }
 
-    Deps& operator=(std::vector<std::string> il)
+    Deps& operator=(std::vector<std::string> &&il)
     {
-        func = [=]() -> std::vector<std::string> { return {il}; };
+        func = [vec = std::vector<std::string>{std::move(il)}]() -> std::vector<std::string> {
+            return vec;
+        };
         return *this;
     }
 
