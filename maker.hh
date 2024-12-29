@@ -79,10 +79,15 @@ struct Deps {
         : func()
     {}
 
-    template<typename Container, std::enable_if_t<isContainer<Container> || isInitializerList<Container>, int> = 0>
-    Deps(Container &&v)
-        : func([v = std::forward<Container>(v)]() mutable -> std::vector<std::string> {
-            return std::forward<Container>(v);
+    Deps(std::vector<std::string> &vec)
+        : func([=]() mutable -> std::vector<std::string> {
+            return vec;
+        })
+    {}
+
+    Deps(std::vector<std::string> &&vec)
+        : func([vec = std::move(vec)]() mutable -> std::vector<std::string> {
+            return vec;
         })
     {}
 
@@ -195,6 +200,18 @@ struct Rule {
     Rule &with_cmd(F &&c)
     {
         cmd = std::make_optional(std::forward<F>(c));
+        return *this;
+    }
+
+    template<typename S, std::enable_if_t<isString<S>, int> = 0>
+    Rule &with_cmd(S &&s)
+    {
+        Cmd cmd;
+        cmd.func = [=]() {
+            return std::system((static_cast<std::string>(s)).c_str());
+        };
+        cmd.description = std::forward<S>(s);
+        this->cmd = cmd;
         return *this;
     }
 
