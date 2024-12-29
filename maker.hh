@@ -181,9 +181,9 @@ struct Rule {
     {}
 
     template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Rule(S &&t, std::initializer_list<std::string> vec)
+    Rule(S &&t, std::initializer_list<std::string> &&vec)
         : cmd()
-        , deps(vec)
+        , deps(std::move(vec))
         , target(std::forward<S>(t))
         , phony(false)
     {}
@@ -191,7 +191,7 @@ struct Rule {
     template<typename S, typename Container, std::enable_if_t<isString<S> || isContainer<Container>, int> = 0>
     Rule(S &&t, Container &&deps)
         : cmd()
-        , deps(std::forward<Container>(deps))
+        , deps(std::move(deps))
         , target(std::forward<S>(t))
         , phony(false)
     {}
