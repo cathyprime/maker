@@ -1,6 +1,7 @@
 #include <vector>
 #include <future>
 #include <string>
+#include <cstdlib>
 #include <iostream>
 #include <functional>
 #include <filesystem>
@@ -18,10 +19,14 @@ using Job = std::function<int(void)>;
 template<typename T>
 constexpr bool is_job = std::is_convertible_v<T, Job>;
 
+const char *get_compiler();
+const std::string header_path = __FILE__;
+
 }; // namespace utils
 
 utils::Job from(std::string cmd);
-bool should_rebuild(const std::filesystem::path &source, const std::filesystem::path &destination);
+bool should_rebuild(const std::filesystem::path &target, const std::filesystem::path &source);
+void go_rebuild_yourself();
 
 class Parallel {
     using Job = utils::Job;
@@ -77,8 +82,49 @@ public:
 
 }; // namespace maker
 
+
+#ifndef shift
+#define shift(xs, size) (((size)--), *(xs)++)
+#endif
+
+#ifndef GO_REBUILD_YOURSELF
+#define GO_REBUILD_YOURSELF(argc, argv)               \
+std::filesystem::path executable = shift(argv, argc); \
+std::filesystem::path source = __FILE__;              \
+maker::go_rebuild_yourself(source, executable, &argc, &argv);
+#endif
+
 #ifdef MAKER_IMPLEMENTATION
 namespace maker {
+
+namespace utils {
+
+const char *get_compiler()
+{
+    const char *compiler = std::getenv("CXX");
+    return compiler ? compiler : "c++";
+}
+
+};
+
+void go_rebuild_yourself(std::filesystem::path &source, std::filesystem::path &executable, int *argc, char ***argv)
+{
+    if (should_rebuild(executable, source) || should_rebuild(executable, utils::header_path)) {
+        std::string cmd = utils::get_compiler();
+        cmd += (" " MAKER_FLAGS " -o ") + executable.string() + " " + source.string();
+        std::cout << "[CMD]: " << cmd << std::endl;
+        int result = std::system(cmd.c_str());
+        if (result != 0) std::exit(result);
+        cmd.clear();
+        cmd += executable;
+        while (*argc) {
+            cmd.push_back(' ');
+            cmd += shift(*argv, *argc);
+        }
+        std::cout << "[CMD]: " << cmd << std::endl;
+        std::exit(std::system(cmd.c_str()));
+    }
+}
 
 utils::Job from(std::string cmd)
 {
