@@ -87,12 +87,11 @@ public:
 #define shift(xs, size) (((size)--), *(xs)++)
 #endif
 
-#ifndef GO_REBUILD_YOURSELF
-#define GO_REBUILD_YOURSELF(argc, argv)               \
-std::filesystem::path executable = shift(argv, argc); \
-std::filesystem::path source = __FILE__;              \
-maker::go_rebuild_yourself(source, executable, &argc, &argv);
+#ifdef GO_REBUILD_YOURSELF
+#undef GO_REBUILD_YOURSELF
 #endif
+
+#define GO_REBUILD_YOURSELF(argc, argv) maker::go_rebuild_yourself(__FILE__, shift(argv, argc), &argc, &argv);
 
 #ifdef MAKER_IMPLEMENTATION
 namespace maker {
@@ -107,7 +106,7 @@ const char *get_compiler()
 
 };
 
-void go_rebuild_yourself(std::filesystem::path &source, std::filesystem::path &executable, int *argc, char ***argv)
+void go_rebuild_yourself(std::filesystem::path &&source, std::filesystem::path &&executable, int *argc, char ***argv)
 {
     if (should_rebuild(executable, source) || should_rebuild(executable, utils::header_path)) {
         std::string cmd = utils::get_compiler();
