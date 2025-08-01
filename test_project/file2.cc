@@ -1,3 +1,4 @@
+#include "file2.hh"
 #include <iostream>
 
 void func2()
