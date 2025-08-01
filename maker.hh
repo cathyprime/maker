@@ -130,7 +130,7 @@ int __execute_impl(It begin, It end, std::string *output = nullptr)
 
         char buffer[1024];
         ssize_t count;
-        while((count = read(pipefd[0], buffer, sizeof(buffer))) > 0) {
+        while ((count = read(pipefd[0], buffer, sizeof(buffer))) > 0) {
             output->append(buffer, count);
         }
         close(pipefd[0]);
@@ -178,7 +178,7 @@ void print_cmd(It begin, It end)
 
 utils::Job from(std::string cmd);
 bool should_rebuild(const std::filesystem::path &target, const std::filesystem::path &source);
-void go_rebuild_yourself(std::filesystem::path &&source, std::filesystem::path &&executable, int *argc, char ***argv);
+void go_rebuild_yourself(std::filesystem::path &&source, std::filesystem::path &&executable, int argc, char **argv);
 
 class Parallel {
     using Job = utils::Job;
@@ -287,7 +287,7 @@ private:
 #undef GO_REBUILD_YOURSELF
 #endif
 
-#define GO_REBUILD_YOURSELF(argc, argv) maker::go_rebuild_yourself(__FILE__, shift(argv, argc), &argc, &argv);
+#define GO_REBUILD_YOURSELF(argc, argv) maker::go_rebuild_yourself(__FILE__, shift(argv, argc), argc, argv);
 
 #ifdef MAKER_IMPLEMENTATION
 extern char **environ;
@@ -302,7 +302,7 @@ const char *maker::utils::get_compiler()
 #include <iostream>
 #endif
 
-void maker::go_rebuild_yourself(std::filesystem::path &&source, std::filesystem::path &&executable, int *argc, char ***argv)
+void maker::go_rebuild_yourself(std::filesystem::path &&source, std::filesystem::path &&executable, int argc, char **argv)
 {
     #ifdef MAKER_NTH_RUN
     if (maker::should_rebuild(executable, source) || maker::should_rebuild(executable, utils::header_path)) {
@@ -320,9 +320,9 @@ void maker::go_rebuild_yourself(std::filesystem::path &&source, std::filesystem:
         if (result != 0) std::exit(result);
 
         std::string cmd = executable.string();
-        while (*argc) {
+        while (argc) {
             cmd.push_back(' ');
-            cmd += shift(*argv, *argc);
+            cmd += shift(argv, argc);
         }
 
         MAKER_LOG_INFO("restarting");
