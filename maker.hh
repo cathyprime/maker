@@ -40,6 +40,26 @@
 namespace maker {
 namespace utils {
 
+template<typename... Strs>
+std::string concat(Strs&&... strings)
+{
+    std::string result = "";
+    static_assert((... && (std::is_convertible_v<Strs, std::string_view>)),
+    "expected string like type");
+
+    bool first = true;
+    auto f = [&](const std::string_view &s) -> void {
+        if (s.empty()) return;
+        result += (first ? "" : " ");
+        result += s;
+        first = false;
+    };
+
+    (..., f(std::string_view(std::forward<Strs>(strings))));
+
+    return result;
+}
+
 std::vector<std::string> split_args(const std::string &cmd);
 std::vector<std::string> split_args(const char *cmd);
 using Job = std::function<int(void)>;
@@ -65,7 +85,7 @@ int __execute_impl(It begin, It end, std::string *output = nullptr)
         std::is_same_v<Str, const char*> ||
         std::is_same_v<Str, std::string> ||
         std::is_same_v<Str, std::string_view>,
-        "Command arguments must be const char*, std::string, std::string_view or char*"
+        "expected string like type"
     );
 
     if (begin == end)
@@ -139,7 +159,7 @@ void print_cmd(It begin, It end)
         std::is_same_v<Str, const char*> ||
         std::is_same_v<Str, std::string> ||
         std::is_same_v<Str, std::string_view>,
-        "Command arguments must be const char*, std::string, std::string_view or char*"
+        "expected string like type"
     );
 
     if (begin == end) return;
@@ -458,11 +478,13 @@ int maker::Project::update_o_files()
             }
         }
 
-        if (!exists || any_ood) {
-            parallel += maker::from(this->compiler
-                                    + " -c " + this->flags
-                                    + " -o " + o_file.string()
-                                    + " " + outfile.string());
+        if (!exists || any_ood || this->force) {
+            parallel += maker::from(
+                maker::utils::concat(
+                    this->compiler,
+                    "-c", this->flags,
+                    "-o", o_file.string(),
+                    outfile.string()));
         }
     }
 
