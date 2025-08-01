@@ -1,637 +1,505 @@
-#include <array>
 #include <vector>
-#include <string>
 #include <future>
-#include <utility>
+#include <string>
 #include <cstdlib>
-#include <fstream>
-#include <iostream>
-#include <optional>
-#include <algorithm>
-#include <filesystem>
 #include <functional>
+#include <filesystem>
 #include <type_traits>
-#include <system_error>
+
+#ifdef MAKER_PROJECT
+#include <array>
+#include <sstream>
+#include <cstdint>
+#include <cassert>
+#include <iostream>
+#include <algorithm>
+#include <string_view>
 #include <unordered_map>
-#include <unordered_set>
+#endif
+
+#ifndef MAKER_LOG
+#include <iostream>
+#define MAKER_LOG(str) do {                     \
+    using namespace std::string_literals;       \
+    std::cout << ("[EXEC] :: "s + str + "\n"s); \
+} while (0);
+#endif
+
+#ifndef MAKER_LOG_INFO
+#include <iostream>
+#define MAKER_LOG_INFO(str) do {                \
+    using namespace std::string_literals;       \
+    std::cout << ("[INFO] :: "s + str + "\n"s); \
+} while (0);
+#endif
 
 #ifndef MAKER_FLAGS
 #define MAKER_FLAGS "-std=c++17 -Wfatal-errors -Oz -fno-rtti -fno-exceptions -Wall -Wextra -march=native -s -Werror -Wpedantic"
 #endif
 
-#define INF(mess) std::cerr << "[INFO]: " << mess << '\n'
-#define WRN(mess) std::cerr << "[WARN]: " << mess << '\n'
-#define ERR(mess) std::cerr << "[ERROR]: " << mess << '\n'
-#define CMD(mess) std::cerr << "[CMD]: " << mess << '\n'
-#define shift(argc, argv) ((argc)--, *(argv)++)
-
 namespace maker {
+namespace utils {
 
-struct Rule;
+template<typename... Strs>
+std::string concat(Strs&&... strings)
+{
+    std::string result = "";
+    static_assert((... && (std::is_convertible_v<Strs, std::string_view>)),
+    "expected string like type");
 
-using cmd_t = std::function<int(void)>;
-using deps_t = std::function<std::vector<std::string>(void)>;
+    bool first = true;
+    auto f = [&](const std::string_view &s) -> void {
+        if (s.empty()) return;
+        result += (first ? "" : " ");
+        result += s;
+        first = false;
+    };
 
-template<typename T, typename U>
-constexpr bool isU = std::is_same<std::decay_t<T>, U>::value;
+    (..., f(std::string_view(std::forward<Strs>(strings))));
 
-template<typename T>
-constexpr bool isString = isU<T, std::string>;
+    return result;
+}
 
-template<typename T>
-constexpr bool isRule = isU<T, maker::Rule>;
-
-template <typename T, typename... Args>
-using areAllOfType = std::enable_if_t<(std::is_same<std::decay_t<Args>, T>::value && ...)>;
-
-template <typename... Args>
-using areAllStrings = areAllOfType<std::string, Args...>;
-
-template <typename Container>
-constexpr bool isContainer = std::is_same_v<std::decay_t<Container>, std::vector<std::string>>;
-
-template <typename IL>
-constexpr bool isInitializerList = std::is_same_v<std::decay_t<IL>, std::initializer_list<std::string>>;
-
-struct Cmd {
-    cmd_t func;
-    std::string description;
-
-    Cmd()
-        : func()
-        , description()
-    {
-    }
-
-    template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Cmd(S &&s)
-        : func([str = std::forward<S>(s)]() { return std::system(str.c_str()); })
-        , description(s)
-    {
-    }
-};
+std::vector<std::string> split_args(const std::string &cmd);
+std::vector<std::string> split_args(const char *cmd);
+using Job = std::function<int(void)>;
 
 template<typename T>
-constexpr bool isCmd = isU<T, Cmd>;
+constexpr bool is_job = std::is_convertible_v<T, Job>;
 
-struct Deps {
-    deps_t func;
+const char *get_compiler();
+const std::string header_path = __FILE__;
 
-    Deps()
-        : func()
-    {
-    }
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
-    Deps(const std::vector<std::string> &vec)
-        : func([=]() mutable -> std::vector<std::string> {
-            return vec;
-        })
-    {
-    }
+namespace {
 
-    Deps(std::vector<std::string> &&vec)
-        : func([vec = std::move(vec)]() mutable -> std::vector<std::string> {
-            return vec;
-        })
-    {
-    }
+template<bool Capture_Output, typename It>
+int __execute_impl(It begin, It end, std::string *output = nullptr)
+{
+    using Str = typename std::iterator_traits<It>::value_type;
+    static_assert(
+        std::is_same_v<Str, char*>       ||
+        std::is_same_v<Str, const char*> ||
+        std::is_same_v<Str, std::string> ||
+        std::is_same_v<Str, std::string_view>,
+        "expected string like type"
+    );
 
-    template<typename IL, std::enable_if_t<isInitializerList<IL>, int> = 0>
-    Deps& operator=(IL il)
-    {
-        func = [=]() -> std::vector<std::string> { return std::vector<std::string>( std::forward<IL>(il)); };
-        return *this;
-    }
+    if (begin == end)
+        return -1;
 
-    Deps& operator=(std::vector<std::string> &&il)
-    {
-        func = [vec = std::vector<std::string>{std::move(il)}]() -> std::vector<std::string> {
-            return vec;
-        };
-        return *this;
+    int pipefd[2]{ -1, -1 };
+    if constexpr (Capture_Output) {
+        if (pipe(pipefd) == -1) return false;
     }
 
-    std::vector<std::string> operator()() {
-        return func();
-    }
-};
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
 
-class Cmd_Builder {
-    std::vector<std::string> m_cmd;
-    std::size_t m_idx;
+    if constexpr (Capture_Output) {
+        posix_spawn_file_actions_addclose(&fa, pipefd[0]);
+        posix_spawn_file_actions_adddup2(&fa, pipefd[1], STDOUT_FILENO);
+        posix_spawn_file_actions_addclose(&fa, pipefd[1]);
+    }
 
-  public:
-    Cmd_Builder() = default;
+    pid_t pid;
 
-    template <typename... Args, typename = areAllStrings<Args...>>
-    Cmd_Builder(Args... args) noexcept
-        : m_cmd({ args... })
-        , m_idx(0)
-    {
+    std::vector<char*> argv;
+    for (; begin != end; ++begin) {
+        auto sv = static_cast<std::string_view>(*begin);
+        argv.push_back(const_cast<char*>(sv.data()));
     }
-    template<typename... Args, typename = areAllStrings<Args...>>
-    Cmd_Builder &push(Args... args) noexcept
-    {
-        m_cmd.insert(m_cmd.end(), { args... });
-        return *this;
-    }
-    template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Cmd_Builder &push(S &&s) noexcept
-    {
-        m_cmd.push_back(std::forward<S>(s));
-        return *this;
-    }
-    template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Cmd_Builder &operator+=(S &&s)
-    {
-        m_cmd.push_back(std::forward<S>(s));
-        return *this;
-    }
-    template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Cmd_Builder &operator+(S &&s)
-    {
-        m_cmd.push_back(std::forward<S>(s));
-        return *this;
-    }
-    operator std::string()
-    {
-        return build();
-    }
-    [[nodiscard]] std::string build() const noexcept
-    {
-        std::string result = m_cmd[0];
+    argv.push_back(nullptr);
 
-        for (auto it = m_cmd.begin() + 1; it != m_cmd.end(); ++it) {
-            result += ' ' + *it;
+    if (posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ) != 0) {
+        posix_spawn_file_actions_destroy(&fa);
+        if constexpr (Capture_Output) {
+            close(pipefd[0]);
+            close(pipefd[1]);
         }
+        return 1;
+    }
+
+    posix_spawn_file_actions_destroy(&fa);
+
+    if constexpr (Capture_Output) {
+        close(pipefd[1]);
+
+        char buffer[1024];
+        ssize_t count;
+        while ((count = read(pipefd[0], buffer, sizeof(buffer))) > 0) {
+            output->append(buffer, count);
+        }
+        close(pipefd[0]);
+    }
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+};
+
+template<bool Capture_Output = false, typename Container>
+inline int execute(const Container &cmd, std::string *output = nullptr)
+{
+    return __execute_impl<Capture_Output>(std::begin(cmd), std::end(cmd), output);
+}
+
+template<typename It>
+void print_cmd(It begin, It end)
+{
+    using Str = typename std::iterator_traits<It>::value_type;
+
+    static_assert(
+        std::is_same_v<Str, char*>       ||
+        std::is_same_v<Str, const char*> ||
+        std::is_same_v<Str, std::string> ||
+        std::is_same_v<Str, std::string_view>,
+        "expected string like type"
+    );
+
+    if (begin == end) return;
+
+    std::string str = *begin;
+    ++begin;
+    for (; begin != end; ++begin) {
+        str += " ";
+        str += *begin;
+    }
+
+    MAKER_LOG(str);
+}
+
+}; // namespace utils
+
+utils::Job from(std::string cmd);
+bool should_rebuild(const std::filesystem::path &target, const std::filesystem::path &source);
+void go_rebuild_yourself(std::filesystem::path &&source, std::filesystem::path &&executable, int argc, char **argv);
+
+class Parallel {
+    using Job = utils::Job;
+    std::vector<Job> jobs;
+
+public:
+    template<typename... Funcs>
+    explicit Parallel(Funcs&&... functions)
+    {
+        static_assert((utils::is_job<Funcs> && ...), "All functions need to be int(void)");
+        jobs = { Job(std::forward<Funcs>(functions))... };
+    }
+
+    template<typename T>
+    Parallel &operator+=(T &&func)
+    {
+        static_assert((utils::is_job<T>), "must be int(void)");
+        jobs.push_back(std::forward<T>(func));
+        return *this;
+    }
+
+    template<typename T>
+    Parallel &push(T &&func)
+    {
+        *this += func;
+        return *this;
+    }
+
+    template<typename T>
+    Parallel &operator,(T &&func)
+    {
+        *this += std::forward<T>(func);
+        return *this;
+    }
+
+    int operator()(int max_threads = 0)
+    {
+        size_t idx = 0;
+        size_t result = 0;
+
+        size_t batch_size = max_threads != 0
+            ? max_threads
+            : jobs.size();
+
+        std::vector<std::future<int>> futures;
+        futures.reserve(batch_size);
+
+        while (idx < jobs.size()) {
+            if (result != 0) break;
+
+            size_t batch_idx = 0;
+            for (; batch_idx < batch_size && idx + batch_idx < jobs.size(); ++batch_idx) {
+                futures.push_back(std::async(std::launch::async, jobs[idx + batch_idx]));
+            }
+
+            idx += batch_idx;
+            for (auto &it : futures) {
+                int job_result = it.get();
+                if (job_result != 0 && result == 0) {
+                    result = job_result;
+                }
+            }
+            futures.clear();
+        }
+
         return result;
     }
 };
 
-struct Rule {
-    std::optional<Cmd> cmd;
-    Deps deps;
-    std::string target;
-    bool phony;
+#ifdef MAKER_PROJECT
+struct Project
+{
+    std::filesystem::path build_directory = "out";
+    std::filesystem::path source_directory = ".";
+    std::string executable_name = "main";
+    std::string compiler = utils::get_compiler();
+    std::string flags = "";
+    int max_threads = 0;
+    bool force = false;
 
-    Rule()
-        : cmd()
-        , deps()
-        , target()
-        , phony(false)
-    {
-    }
-    template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Rule(S &&t)
-        : cmd()
-        , deps()
-        , target(std::forward<S>(t))
-        , phony(false)
-    {
-    }
+    using filter_t = std::function<bool(const std::filesystem::directory_entry&)>;
+    filter_t filter_sources = [](const std::filesystem::directory_entry &entry) -> bool {
+        return entry.path().stem() != "maker"
+        && entry.path().extension() == ".cc";
+    };
 
-    template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Rule(S &&t, std::initializer_list<std::string> &&vec)
-        : cmd()
-        , deps(std::move(vec))
-        , target(std::forward<S>(t))
-        , phony(false)
-    {
-    }
+    int operator()();
+private:
+    using dep_t = std::vector<std::filesystem::path>;
+    using dep_map_t = std::unordered_map<std::filesystem::path, dep_t>;
 
-    template<typename S, typename Container, std::enable_if_t<isString<S> || isContainer<Container>, int> = 0>
-    Rule(S &&t, Container &&deps)
-        : cmd()
-        , deps(std::move(deps))
-        , target(std::forward<S>(t))
-        , phony(false)
-    {
-    }
-
-    template<typename F, std::enable_if_t<isCmd<F>, int> = 0>
-    Rule &with_cmd(F &&c)
-    {
-        cmd = std::make_optional(std::forward<F>(c));
-        return *this;
-    }
-
-    template<typename S, std::enable_if_t<isString<S>, int> = 0>
-    Rule &with_cmd(S &&s)
-    {
-        Cmd cmd;
-        cmd.func = [=]() {
-            return std::system((static_cast<std::string>(s)).c_str());
-        };
-        cmd.description = std::forward<S>(s);
-        this->cmd = std::move(cmd);
-        return *this;
-    }
-
-    Rule &with_phony()
-    {
-        phony = true;
-        return *this;
-    }
-
-    bool should_rebuild()
-    {
-        if (!std::filesystem::exists(target))
-            return true;
-        if (std::filesystem::is_directory(target))
-            return false;
-
-        auto target_mod_time = std::filesystem::last_write_time(target);
-        for (const auto &dep: deps()) {
-            if (!std::filesystem::exists(dep))
-                return true;
-
-            if (std::filesystem::is_directory(dep))
-                continue;
-
-            auto dependency_mod_time = std::filesystem::last_write_time(dep);
-            if (dependency_mod_time > target_mod_time)
-                return true;
-        }
-        return false;
-    }
+    int create_executable();
+    dep_map_t get_dependency_map();
+    int update_o_files();
 };
+#endif // MAKER_PROJECT
 
-namespace {
+}; // namespace maker
 
-struct Tree_Node {
-    Rule *rule;
-    std::vector<size_t> deps;
-    bool visited;
 
-    Tree_Node()
-        : rule(nullptr)
-        , deps()
-        , visited(false)
-    {
-    }
+#ifndef shift
+#define shift(xs, size) (((size)--), *(xs)++)
+#endif
 
-    Tree_Node(Rule* rule)
-        : rule(rule)
-        , deps()
-        , visited(false)
-    {
-    }
-};
+#ifdef GO_REBUILD_YOURSELF
+#undef GO_REBUILD_YOURSELF
+#endif
 
-struct Tree {
-    std::vector<Tree_Node> nodes;
+#define GO_REBUILD_YOURSELF(argc, argv) maker::go_rebuild_yourself(__FILE__, shift(argv, argc), argc, argv);
 
-    Tree_Node &operator[](size_t idx)
-    {
-        return nodes[idx];
-    }
-    size_t add_node()
-    {
-        nodes.emplace_back();
-        return nodes.size() - 1;
-    }
-    size_t add_node(Rule *rule)
-    {
-        nodes.emplace_back(rule);
-        return nodes.size() - 1;
-    }
-};
+#ifdef MAKER_IMPLEMENTATION
+extern char **environ;
 
-struct Job {
-    std::vector<Cmd> todo;
-
-    Job() = default;
-    Job(Cmd &s)
-        : todo()
-    {
-        todo.push_back(s);
-    }
-
-    size_t size()
-    {
-        return todo.size();
-    }
-
-    template<typename F, std::enable_if_t<isCmd<F>, int> = 0>
-    Job &operator+=(F &&cmd)
-    {
-        todo.push_back(std::forward<F>(cmd));
-        return *this;
-    }
-
-    operator bool()
-    {
-        return !todo.empty();
-    }
-
-    bool operator()(size_t &idx, size_t total, int &ecode)
-    {
-        std::vector<std::future<int>> futures;
-
-        for (auto &it: todo) {
-            std::string cmd;
-            cmd += "[" + std::to_string(++idx);
-            cmd += "/" + std::to_string(total);
-            cmd += "]: " + it.description + '\n';
-            std::cout << cmd;
-
-            futures.push_back(std::async(std::launch::async, it.func));
-        }
-
-        for (auto &it: futures) {
-            int result = it.get();
-            if (result != 0) {
-                ecode = result;
-                return false;
-            }
-        }
-
-        return true;
-    }
-};
-
+const char *maker::utils::get_compiler()
+{
+    const char *compiler = std::getenv("CXX");
+    return compiler ? compiler : "c++";
 }
 
-struct Maker {
-    std::unordered_map<std::string, Rule> rules;
+#ifndef MAKER_NTH_RUN
+#include <iostream>
+#endif
 
-    void build_tree(Tree &tree, size_t node_idx)
-    {
-        Tree_Node *node = &tree.nodes[node_idx];
-        if (tree.nodes[node_idx].visited) return;
-        node->visited = true;
-
-        for (const auto &dep: node->rule->deps()) {
-            if (rules.find(dep) == rules.end()) continue;
-
-            Rule* rule = &rules[dep];
-
-            size_t new_node_idx = tree.add_node();
-            Tree_Node &new_node = tree[new_node_idx];
-            tree.nodes[node_idx].deps.push_back(new_node_idx);
-            new_node.rule = rule;
-            if (!(tree.nodes[node_idx].rule->target == dep))
-                build_tree(tree, tree.nodes.size() - 1);
-        }
-    }
-
-    bool recursive_rebuild(Tree &tree, size_t current_idx, std::vector<Job> &jobs)
-    {
-        Job job;
-        bool any_true = false;
-        static std::unordered_set<std::string> seen_commands;
-        Tree_Node &current_node = tree[current_idx];
-
-        for (const auto &dep: current_node.deps) {
-            if (recursive_rebuild(tree, dep, jobs)) {
-                any_true = true;
-                if (!tree[dep].rule->cmd)
-                    continue;
-                if (seen_commands.find(tree[dep].rule->cmd->description) == seen_commands.end()) {
-                    seen_commands.insert(tree[dep].rule->cmd->description);
-                    if (tree[dep].rule->cmd)
-                    job += *(tree[dep].rule->cmd);
-                }
-            }
-        }
-
-        if (job) jobs.push_back(job);
-        return any_true || current_node.rule->phony || current_node.rule->should_rebuild();
-    }
-
-    void clean()
-    {
-        bool run_once = false;
-        for (const auto &it: rules) {
-            if (!it.second.phony) {
-                if (!std::filesystem::exists(it.second.target))
-                    continue;
-                if (std::filesystem::is_directory(it.second.target))
-                    continue;
-                run_once = true;
-                std::string cmd = "rm -r ";
-                cmd += it.first;
-                CMD(cmd);
-                std::system(cmd.c_str());
-            }
-        }
-        if (!run_once) {
-            INF("Already spotless clean...");
-        }
-    }
-
-  public:
-    Maker()
-        : rules()
-    {
-    }
-
-    template<typename R, std::enable_if_t<isU<R, Rule>, int> = 0>
-    Maker &operator+=(R &&rule)
-    {
-        rules[rule.target] = std::forward<R>(rule);
-        return *this;
-    }
-
-    template<typename R, std::enable_if_t<isRule<R>, int> = 0>
-    Maker &operator,(R &&rule)
-    {
-        rules[rule.target] = std::forward<R>(rule);
-        return *this;
-    }
-
-    void operator()(const std::string &target)
-    {
-        if (target == "clean") {
-            clean();
-            return;
-        }
-
-        Tree tree;
-        if (rules.find(target) == rules.end()) {
-            ERR("rule " << target << " not found");
-            return;
-        }
-        Rule *rule = &rules[target];
-        (void)tree.add_node(rule);
-        build_tree(tree, 0);
-        std::vector<Job> jobs;
-
-        if (recursive_rebuild(tree, 0, jobs)) {
-            if (tree.nodes[0].rule->cmd)
-                jobs.push_back(Job(*tree.nodes[0].rule->cmd));
-        }
-
-        size_t total = 0;
-        for (auto &it: jobs) {
-            total += it.size();
-        }
-
-        if (total == 0) {
-            INF("nothing to be done for '" << target << "'");
-            return;
-        }
-
-        int stage = 0;
-        size_t count = 0;
-        int ecode;
-        for (auto &it: jobs) {
-            stage++;
-            if(!it(count, total, ecode)) {
-                ERR("Compilation failed at stage: " << stage << " Aborting!");
-                std::exit(ecode);
-            }
-        }
-    }
-};
-
-namespace utils {
-
-#define fs std::filesystem
-std::unordered_map<fs::path, std::vector<fs::path>>
-parse_d(fs::path d_file)
+void maker::go_rebuild_yourself(std::filesystem::path &&source, std::filesystem::path &&executable, int argc, char **argv)
 {
-    std::fstream file(d_file);
-    std::unordered_map<fs::path, std::vector<fs::path>> dict;
-    std::string lex;
+    #ifdef MAKER_NTH_RUN
+    if (maker::should_rebuild(executable, source) || maker::should_rebuild(executable, utils::header_path)) {
+    #endif
+        #ifndef MAKER_NTH_RUN
+        MAKER_LOG_INFO("first run, optimizing the executable");
+        #endif
+        #ifdef MAKER_NTH_RUN
+        MAKER_LOG_INFO("change detected, recompiling");
+        #endif
+        std::string compile_exec = maker::utils::get_compiler();
+        compile_exec += (" -D MAKER_NTH_RUN " MAKER_FLAGS " -o ") + executable.lexically_normal().string() + " " + source.string();
 
-    char cur_char;
-    char next_char;
-    std::string current_key;
-    while ((cur_char = file.get()) != EOF) {
-        if (std::isspace(cur_char)) {
-            if (!lex.empty() && lex[lex.size() - 1] == ':') {
-                current_key = {lex.data(), lex.size() - 1};
-                dict[current_key] = {};
-                lex.clear();
-                continue;
-            }
-            if (!lex.empty())
-                dict[current_key].push_back(lex);
-            lex.clear();
+        int result = maker::from(compile_exec)();
+        if (result != 0) std::exit(result);
+
+        std::string cmd = executable.string();
+        while (argc) {
+            cmd.push_back(' ');
+            cmd += shift(argv, argc);
+        }
+
+        MAKER_LOG_INFO("restarting");
+        std::exit(maker::from(cmd)());
+    #ifdef MAKER_NTH_RUN
+    }
+    #endif
+}
+
+maker::utils::Job maker::from(std::string cmd)
+{
+    std::vector cmd_arr = maker::utils::split_args(cmd);
+    return [cmd_arr = std::move(cmd_arr), cmd = std::move(cmd)]() mutable -> int {
+        MAKER_LOG(cmd);
+        return maker::utils::execute(cmd_arr);
+    };
+}
+
+bool maker::should_rebuild(const std::filesystem::path &target, const std::filesystem::path &source)
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(target))
+        return true;
+
+    if (!fs::exists(source))
+        return false;
+
+    auto target_time = fs::last_write_time(target);
+    auto source_time = fs::last_write_time(source);
+
+    return source_time > target_time;
+}
+
+std::vector<std::string> maker::utils::split_args(const std::string &str)
+{
+    std::vector<std::string> words;
+    std::stringstream ss(str);
+    std::string buf;
+
+    while (ss >> buf)
+        words.push_back(buf);
+
+    return words;
+}
+
+std::vector<std::string> maker::utils::split_args(const char *str)
+{
+    return maker::utils::split_args(std::string(str));
+}
+
+#ifdef MAKER_PROJECT
+int maker::Project::create_executable()
+{
+    namespace fs = std::filesystem;
+
+    std::vector<fs::path> filenames;
+    for (const auto &entry : fs::directory_iterator(this->source_directory)) {
+        if (!this->filter_sources(entry)) {
             continue;
         }
-        if (cur_char == '\\') {
-            if ((next_char = file.peek()) == ' ') {
-                lex += file.get();
-                while (isspace(file.peek()))
-                    (void)file.get();
-                continue;
-            } else {
-                continue;
-            }
-        }
-        lex += cur_char;
-    }
-    return dict;
-}
-#undef fs
 
-template<typename S, std::enable_if_t<isString<S>, int> = 0>
-inline Cmd from_string(S &&str)
+        filenames.push_back(this->build_directory / entry.path().lexically_normal().replace_extension(".o"));
+    }
+    fs::path executable = this->build_directory / this->executable_name;
+    bool exists = fs::exists(executable);
+    bool any_ood = false;
+    if (exists) {
+        for (const auto &dep : filenames) {
+            any_ood = maker::should_rebuild(executable, dep);
+            if (any_ood) break;
+        }
+    }
+
+    if (!exists || any_ood) {
+        std::vector<std::string> cmd {
+            this->compiler,
+            "-o", this->build_directory / this->executable_name
+        };
+
+        std::transform(
+            filenames.begin(), filenames.end(),
+            std::back_inserter(cmd),
+            [](const fs::path &p) { return p.string(); }
+        );
+
+        maker::utils::print_cmd(cmd.begin(), cmd.end());
+        return maker::utils::execute(cmd);
+    }
+
+    return 0;
+}
+
+maker::Project::dep_map_t maker::Project::get_dependency_map()
 {
-    Cmd cmd;
-    cmd.func = [=]() {
-        return std::system((static_cast<std::string>(str)).c_str());
+    std::vector<std::string> cmd = {
+        maker::utils::get_compiler(),
+        "-MM"
     };
-    cmd.description = std::forward<S>(str);
-    return cmd;
+
+    for (auto &entry : std::filesystem::directory_iterator(this->source_directory)) {
+        if (!this->filter_sources(entry)) {
+            continue;
+        }
+        cmd.push_back(entry.path().string());
+    }
+
+    std::string output;
+    int status = maker::utils::execute<true>(cmd, &output);
+    assert(!status && "failed to execute");
+
+    dep_map_t dependencies;
+
+    std::istringstream output_s { output };
+    for (std::string line; std::getline(output_s, line);) {
+        std::istringstream line_stream { line };
+        std::string key;
+        line_stream >> key;
+        key.erase(key.size() - 1);
+
+        dependencies[this->build_directory / key] = {};
+        std::string word;
+        while (line_stream >> word)
+            dependencies[this->build_directory / key].push_back(word);
+    }
+
+    return dependencies;
 }
 
-inline Cmd from_string(const char *str)
+int maker::Project::update_o_files()
 {
-    return from_string(std::string(str));
-}
+    namespace fs = std::filesystem;
 
-inline std::vector<std::string> get_includes_from_file(std::filesystem::path filename)
-{
-    std::vector<std::string> results;
-    std::ifstream file(filename);
+    fs::create_directory(this->build_directory);
+    auto deps = get_dependency_map();
 
-    std::string line;
-    while (std::getline(file, line)) {
-        if (line.rfind("#include \"", 0) == 0) {
-            std::size_t start = line.find('"') + 1;
-            std::size_t end = line.find('"', start);
-            if (start != std::string::npos && end != std::string::npos) {
-                results.push_back(line.substr(start, end - start));
+    maker::Parallel parallel;
+    for (const auto &entry : fs::directory_iterator(this->source_directory)) {
+        if (!this->filter_sources(entry)) continue;
+
+        fs::path copy = entry.path().lexically_normal();
+        fs::path outfile = entry.path().lexically_normal();
+        copy.replace_extension(".o");
+
+        fs::path o_file = this->build_directory / copy;
+        bool exists = fs::exists(o_file);
+
+        bool any_ood = false;
+        if (exists) {
+            for (auto &dep : deps[o_file.string()]) {
+                any_ood = maker::should_rebuild(o_file, dep);
+                if (any_ood) break;
             }
         }
+
+        if (!exists || any_ood || this->force) {
+            parallel += maker::from(
+                maker::utils::concat(
+                    this->compiler,
+                    "-c", this->flags,
+                    "-o", o_file.string(),
+                    outfile.string()));
+        }
     }
-    return results;
+
+    return parallel(this->max_threads);
 }
 
-std::string get_compiler()
+int maker::Project::operator()()
 {
-    char *compiler = std::getenv("CXX");
-    return compiler == nullptr ? "c++" : compiler;
+    int status = update_o_files();
+
+    if (status != 0)
+        return status;
+
+    return create_executable();
 }
 
-} // namespace: utils
-
-} // namespace: maker
-
-namespace maker { namespace __internal {
-
-inline void go_rebuild_yourself(int *argc, char ***argv,
-                                const std::string &compiler,
-                                const std::filesystem::path &execpath,
-                                const std::string &filename)
-{
-    if (execpath.extension() == ".old") {
-        return;
-    }
-#ifndef _MAKER_OPTIMIZED
-    INF("First run detected, optimizing...");
-#else
-        auto exec_time = std::filesystem::last_write_time(execpath);
-        auto file_time = std::filesystem::last_write_time(filename);
-        if (file_time > exec_time) {
-            INF("New recipe detected, rebuilding...");
-        auto oldexec = std::filesystem::path(execpath).replace_extension("old");
-        std::error_code ecode;
-        if (std::filesystem::exists(oldexec)) {
-            std::filesystem::remove(oldexec, ecode);
-            if (ecode) {
-                ERR("Could not remove the old version: " << ecode.message());
-                std::exit(ecode.value());
-            }
-        }
-        INF("Renaming " << execpath.string() << " -> " << oldexec.string());
-        std::filesystem::rename(execpath, oldexec, ecode);
-        if (ecode) {
-            ERR("Could not rename file: " << ecode.message());
-            std::exit(ecode.value());
-        }
-#endif
-        std::string cmd;
-        cmd += compiler + " -o ";
-        cmd += "'" + execpath.string() + "' ";
-        cmd += filename + ' ';
-        cmd += std::string(MAKER_FLAGS) + ' ';
-        cmd += "-D_MAKER_OPTIMIZED";
-        int result = std::system(cmd.c_str());
-        if (result == 0) {
-            INF("Compiled successfully!");
-            std::string cmd = execpath.string();
-            while (*argc > 0)
-                cmd += ' ' + std::string(shift(*argc, *argv));
-            std::exit(std::system(cmd.c_str()));
-        } else {
-            ERR("Compilation failed, fix errors and try again!");
-            std::exit(result);
-        }
-#ifdef _MAKER_OPTIMIZED
-    }
-#endif
-}
-
-}} // namespace maker::__internal
-
-#define GO_REBUILD_YOURSELF(argc, argv)                                                     \
-    do {                                                                                    \
-        std::string compiler = maker::utils::get_compiler();                                \
-        std::string filename = __FILE__;                                                    \
-        std::filesystem::path execpath = shift(argc, argv);                                 \
-        maker::__internal::go_rebuild_yourself(&argc, &argv, compiler, execpath, filename); \
-    } while(0);
+#endif // MAKER_PROJECT
+#endif // MAKER_IMPLEMENTATION
