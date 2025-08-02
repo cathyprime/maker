@@ -259,10 +259,10 @@ struct Project
     int max_threads = 0;
     bool force = false;
 
-    using filter_t = std::function<bool(const std::filesystem::directory_entry&)>;
-    filter_t filter_sources = [](const std::filesystem::directory_entry &entry) -> bool {
-        return entry.path().stem() != "maker"
-        && entry.path().extension() == ".cc";
+    using filter_t = std::function<bool(const std::filesystem::path&)>;
+    filter_t filter_sources = [] (const std::filesystem::path &file) -> bool {
+        return file.filename().stem() != "maker"
+            && file.filename().extension() == ".cc";
     };
 
     int operator()();
@@ -380,12 +380,12 @@ int maker::Project::create_executable()
     namespace fs = std::filesystem;
 
     std::vector<fs::path> filenames;
-    for (const auto &entry : fs::directory_iterator(this->source_directory)) {
-        if (!this->filter_sources(entry)) {
-            continue;
-        }
+    for (fs::path entry : fs::directory_iterator(this->source_directory)) {
+        if (!this->filter_sources(entry)) continue;
 
-        filenames.push_back(this->build_directory / entry.path().lexically_normal().replace_extension(".o"));
+        fs::path o_file = fs::relative(entry.lexically_normal(), this->source_directory)
+            .replace_extension(".o");
+        filenames.push_back(this->build_directory / o_file);
     }
     fs::path executable = this->build_directory / this->executable_name;
     bool exists = fs::exists(executable);
@@ -418,19 +418,22 @@ int maker::Project::create_executable()
 
 maker::Project::dep_map_t maker::Project::get_dependency_map()
 {
+    namespace fs = std::filesystem;
     std::vector<std::string> cmd = {
         maker::utils::get_compiler(),
         "-MM"
     };
 
-    for (auto &entry : std::filesystem::directory_iterator(this->source_directory)) {
+    for (fs::path entry : fs::directory_iterator(this->source_directory)) {
         if (!this->filter_sources(entry)) {
             continue;
         }
-        cmd.push_back(entry.path().string());
+
+        cmd.push_back(entry.string());
     }
 
     std::string output;
+    maker::utils::print_cmd(cmd.begin(), cmd.end());
     int status = maker::utils::execute<true>(cmd, &output);
     assert(!status && "failed to execute");
 
@@ -445,8 +448,10 @@ maker::Project::dep_map_t maker::Project::get_dependency_map()
 
         dependencies[this->build_directory / key] = {};
         std::string word;
-        while (line_stream >> word)
-            dependencies[this->build_directory / key].push_back(word);
+        while (line_stream >> word) {
+            dependencies[this->build_directory / key]
+                .push_back(fs::path { this->source_directory / word });
+        }
     }
 
     return dependencies;
@@ -460,12 +465,12 @@ int maker::Project::update_o_files()
     auto deps = get_dependency_map();
 
     maker::Parallel parallel;
-    for (const auto &entry : fs::directory_iterator(this->source_directory)) {
+    for (fs::path entry : fs::directory_iterator(this->source_directory)) {
         if (!this->filter_sources(entry)) continue;
 
-        fs::path copy = entry.path().lexically_normal();
-        fs::path outfile = entry.path().lexically_normal();
-        copy.replace_extension(".o");
+        fs::path copy = fs::relative(entry.lexically_normal(), this->source_directory)
+            .replace_extension(".o");
+        fs::path outfile = entry.lexically_normal();
 
         fs::path o_file = this->build_directory / copy;
         bool exists = fs::exists(o_file);
