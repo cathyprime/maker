@@ -491,15 +491,15 @@ int maker::Project::update_executable()
     }
     fs::path executable = this->build_directory / this->executable_name;
     bool exists = fs::exists(executable);
-    bool any_ood = false;
+    bool any_out_of_date = false;
     if (exists) {
         for (const auto &dep : filenames) {
-            any_ood = maker::should_rebuild(executable, dep);
-            if (any_ood) break;
+            any_out_of_date = maker::should_rebuild(executable, dep);
+            if (any_out_of_date) break;
         }
     }
 
-    if (!exists || any_ood) {
+    if (!exists || any_out_of_date) {
         maker::utils::cmd_t cmd {
             this->compiler,
         };
@@ -581,15 +581,15 @@ int maker::Project::update_o_files()
         fs::path o_file = this->build_directory / copy;
         bool exists = fs::exists(o_file);
 
-        bool any_ood = false;
+        bool any_out_of_date = false;
         if (exists) {
             for (auto &dep : deps[o_file.string()]) {
-                any_ood = maker::should_rebuild(o_file, dep);
-                if (any_ood) break;
+                any_out_of_date = maker::should_rebuild(o_file, dep);
+                if (any_out_of_date) break;
             }
         }
 
-        if (!exists || any_ood || this->force) {
+        if (!exists || any_out_of_date || this->force) {
             parallel += maker::from(
                 maker::utils::concat(
                     this->compiler,
