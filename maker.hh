@@ -40,6 +40,81 @@
 namespace maker {
 namespace utils {
 
+template<typename T, typename = void>
+struct is_iter : std::false_type {};
+
+template<typename T>
+struct is_iter<T, std::void_t<
+    decltype(std::begin(std::declval<T&>())),
+    decltype(std::end(std::declval<T&>()))
+>> : std::true_type {};
+
+template<typename T>
+struct is_str : std::false_type {};
+
+template<>
+struct is_str<char*> : std::true_type {};
+
+template<>
+struct is_str<const char*> : std::true_type {};
+
+template<>
+struct is_str<std::string> : std::true_type {};
+
+template<>
+struct is_str<std::string_view> : std::true_type {};
+
+struct flag_concat {
+    std::string flag = "";
+    std::vector<std::string> parts = {};
+
+    flag_concat(std::string str)
+        : flag(str)
+    {}
+
+    template<typename... Strings>
+    void add(Strings&&... strings)
+    {
+        (..., parts.emplace_back(std::forward<Strings>(strings)));
+    }
+
+    std::vector<std::string> *operator->() {
+        return &parts;
+    }
+
+    std::vector<std::string> &operator*()
+    {
+        return parts;
+    }
+
+    operator std::string ()
+    {
+        std::string result;
+        bool first = true;
+        for (auto part = parts.begin(); part != parts.end(); ++part) {
+            if (!first) result += ' ';
+            result += flag;
+            result += *part;
+            first = false;
+        }
+        return result;
+    }
+};
+
+template<typename Container>
+std::string concat(const Container &strings)
+{
+    static_assert(is_iter<Container>(), "iterator is required");
+    bool first = true;
+    std::string result;
+    for (auto word = std::begin(strings); word != std::end(strings); ++word) {
+        if (!first) result += ' ';
+        result += *word;
+    }
+
+    return result;
+}
+
 template<typename... Strs>
 std::string concat(Strs&&... strings)
 {
@@ -79,14 +154,8 @@ namespace {
 template<bool Capture_Output, typename It>
 int __execute_impl(It begin, It end, std::string *output = nullptr)
 {
-    using Str = typename std::iterator_traits<It>::value_type;
-    static_assert(
-        std::is_same_v<Str, char*>       ||
-        std::is_same_v<Str, const char*> ||
-        std::is_same_v<Str, std::string> ||
-        std::is_same_v<Str, std::string_view>,
-        "expected string like type"
-    );
+    using Val = typename std::iterator_traits<It>::value_type;
+    static_assert(is_str<Val>(), "expected string like type");
 
     if (begin == end)
         return -1;
@@ -146,29 +215,61 @@ int __execute_impl(It begin, It end, std::string *output = nullptr)
 template<bool Capture_Output = false, typename Container>
 inline int execute(const Container &cmd, std::string *output = nullptr)
 {
+    static_assert(is_iter<Container>(), "iterator is required");
     return __execute_impl<Capture_Output>(std::begin(cmd), std::end(cmd), output);
 }
+
+struct cmd_t {
+    std::vector<std::string> cmd = {};
+
+    template<typename... Strings>
+    cmd_t(Strings&&... strings)
+    {
+        (..., cmd.emplace_back(std::forward<Strings>(strings)));
+    }
+
+    operator std::vector<std::string>& ()
+    {
+        return cmd;
+    }
+
+    std::vector<std::string> &operator* ()
+    {
+        return cmd;
+    }
+
+    std::vector<std::string> *operator-> ()
+    {
+        return &cmd;
+    }
+
+    int run()
+    {
+        return maker::utils::execute(cmd);
+    }
+
+    int run(std::string *output)
+    {
+        return maker::utils::execute<true>(cmd, output);
+    }
+};
 
 template<typename It>
 void print_cmd(It begin, It end)
 {
-    using Str = typename std::iterator_traits<It>::value_type;
-
-    static_assert(
-        std::is_same_v<Str, char*>       ||
-        std::is_same_v<Str, const char*> ||
-        std::is_same_v<Str, std::string> ||
-        std::is_same_v<Str, std::string_view>,
-        "expected string like type"
-    );
+    using Val = typename std::iterator_traits<It>::value_type;
+    static_assert(is_str<Val>(), "expected string like type");
 
     if (begin == end) return;
 
     std::string str = *begin;
     ++begin;
     for (; begin != end; ++begin) {
-        str += " ";
-        str += *begin;
+        std::string word = *begin;
+        if (!word.empty()) {
+            str += " ";
+            str += word;
+        }
     }
 
     MAKER_LOG(str);
@@ -255,7 +356,8 @@ struct Project
     std::filesystem::path source_directory = ".";
     std::string executable_name = "main";
     std::string compiler = utils::get_compiler();
-    std::string flags = "";
+    std::string ldflags = "";
+    std::string cflags = "";
     int max_threads = 0;
     bool force = false;
 
@@ -270,7 +372,7 @@ private:
     using dep_t = std::vector<std::filesystem::path>;
     using dep_map_t = std::unordered_map<std::filesystem::path, dep_t>;
 
-    int create_executable();
+    int update_executable();
     dep_map_t get_dependency_map();
     int update_o_files();
 };
@@ -375,7 +477,7 @@ std::vector<std::string> maker::utils::split_args(const char *str)
 }
 
 #ifdef MAKER_PROJECT
-int maker::Project::create_executable()
+int maker::Project::update_executable()
 {
     namespace fs = std::filesystem;
 
@@ -398,19 +500,24 @@ int maker::Project::create_executable()
     }
 
     if (!exists || any_ood) {
-        std::vector<std::string> cmd {
+        maker::utils::cmd_t cmd {
             this->compiler,
-            "-o", this->build_directory / this->executable_name
         };
+
+        auto ld_flags = utils::split_args(this->ldflags);
+        cmd->insert(cmd->end(), ld_flags.begin(), ld_flags.end());
+
+        cmd->push_back("-o");
+        cmd->push_back(this->build_directory / this->executable_name);
 
         std::transform(
             filenames.begin(), filenames.end(),
-            std::back_inserter(cmd),
+            std::back_inserter(*cmd),
             [](const fs::path &p) { return p.string(); }
         );
 
-        maker::utils::print_cmd(cmd.begin(), cmd.end());
-        return maker::utils::execute(cmd);
+        maker::utils::print_cmd(cmd->begin(), cmd->end());
+        return cmd.run();
     }
 
     return 0;
@@ -419,7 +526,7 @@ int maker::Project::create_executable()
 maker::Project::dep_map_t maker::Project::get_dependency_map()
 {
     namespace fs = std::filesystem;
-    std::vector<std::string> cmd = {
+    maker::utils::cmd_t cmd = {
         maker::utils::get_compiler(),
         "-MM"
     };
@@ -429,12 +536,11 @@ maker::Project::dep_map_t maker::Project::get_dependency_map()
             continue;
         }
 
-        cmd.push_back(entry.string());
+        cmd->push_back(entry.string());
     }
 
     std::string output;
-    maker::utils::print_cmd(cmd.begin(), cmd.end());
-    int status = maker::utils::execute<true>(cmd, &output);
+    int status = cmd.run(&output);
     assert(!status && "failed to execute");
 
     dep_map_t dependencies;
@@ -487,7 +593,7 @@ int maker::Project::update_o_files()
             parallel += maker::from(
                 maker::utils::concat(
                     this->compiler,
-                    "-c", this->flags,
+                    this->cflags, "-c",
                     "-o", o_file.string(),
                     outfile.string()));
         }
@@ -503,7 +609,7 @@ int maker::Project::operator()()
     if (status != 0)
         return status;
 
-    return create_executable();
+    return update_executable();
 }
 
 #endif // MAKER_PROJECT

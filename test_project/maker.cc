@@ -12,8 +12,12 @@ int main(int argc, char **argv)
 
     maker::Project project;
 
-    project.flags =
-        maker::utils::concat(optimization, arch, no_debug_symbols);;
+    maker::utils::flag_concat libs { "-l" };
+    libs->push_back("m");
+
+    project.cflags =
+        maker::utils::concat(optimization, arch, no_debug_symbols);
+    project.ldflags = libs;
 
     project();
 }
