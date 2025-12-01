@@ -1,3 +1,6 @@
-test_project/*
 main
 maker*
+!maker.cc
+!maker.hh
+tests*
+!tests.cc
