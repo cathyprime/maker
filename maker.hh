@@ -44,6 +44,7 @@ namespace maker
         size_t strlen(const char *str);
         char *strcpy(char *dest, const char *str);
         char *strdup(const char *str);
+        int strcmp(const char *lhs, const char *rhs);
     }
 } // maker
 
@@ -121,6 +122,7 @@ void maker::Command::push(char *cmd)
 
 size_t maker::temp::strlen(const char *str)
 {
+    if (!str) return 0;
     const char *seeker = str;
     while(*seeker++);
     return static_cast<size_t>(seeker - str) - 1;
@@ -128,8 +130,14 @@ size_t maker::temp::strlen(const char *str)
 
 char *maker::temp::strcpy(char *dest, const char *str)
 {
+    if (!str)  return nullptr;
+    if (!dest) return nullptr;
     char *d = dest;
-    while (*str) *dest++ = *str++;
+    do
+    {
+        *dest++ = *str++;
+    }
+    while (*str);
     return d;
 }
 
@@ -137,6 +145,16 @@ char *maker::temp::strdup(const char *str)
 {
     char *new_str = (char*) maker::tmp_buffer.alloc_count(strlen(str) + 1, sizeof(*str));
     return strcpy(new_str, str);
+}
+
+int maker::temp::strcmp(const char *left, const char *right)
+{
+    while(*left && (*left == *right))
+    {
+        left++;
+        right++;
+    }
+    return *(unsigned char*)left - *(unsigned char*)right;
 }
 
 #endif

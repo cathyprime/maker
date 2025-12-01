@@ -5,6 +5,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include <cstring>
 
 using namespace maker;
 
@@ -156,6 +157,148 @@ TEST_CASE("Push"
             CHECK(cmd.capacity == 8);
             CHECK(cmd.length == 5);
         }
+    }
+}
+TEST_SUITE_END();
+
+TEST_SUITE_BEGIN("String operations");
+TEST_CASE("strlen")
+{
+    SUBCASE("valid string")
+    {
+        char word_from_arr[14] = {
+            'H', 'e', 'l', 'l', 'o', ',', ' ',
+            'w', 'o', 'r', 'l', 'd', '!', '\0'
+        };
+        CHECK(temp::strlen(word_from_arr) == 13);
+
+        char word_from_literal[6] = "Hello";
+        CHECK(temp::strlen(word_from_literal) == 5);
+    }
+
+    SUBCASE("just zerobyte")
+    {
+        const char *word = "\0";
+        CHECK(temp::strlen(word) == 0);
+    }
+
+    SUBCASE("nullptr")
+    {
+        CHECK(temp::strlen(nullptr) == 0);
+    }
+}
+
+TEST_CASE("strcpy")
+{
+    SUBCASE("valid string")
+    {
+        const char *word = "Hello";
+        char buffer[6];
+
+        temp::strcpy(buffer, word);
+        CHECK(std::strcmp(buffer, word) == 0);
+    }
+
+    SUBCASE("just zerobyte")
+    {
+        const char *word = "\0";
+        char buffer[5] = "xxxx";
+
+        auto *result = temp::strcpy(buffer, word);
+        CHECK(result == buffer);
+        CHECK(buffer[0] == '\0');
+        CHECK(buffer[1] == 'x');
+        CHECK(buffer[2] == 'x');
+        CHECK(buffer[3] == 'x');
+        CHECK(buffer[4] == '\0');
+    }
+
+    SUBCASE("nullptr in")
+    {
+        char buffer[5] = "xxxx";
+        auto *result = temp::strcpy(buffer, nullptr);
+
+        CHECK(result == nullptr);
+        CHECK(buffer[0] == 'x');
+        CHECK(buffer[1] == 'x');
+        CHECK(buffer[2] == 'x');
+        CHECK(buffer[3] == 'x');
+        CHECK(buffer[4] == '\0');
+    }
+
+    SUBCASE("nullptr out")
+    {
+        auto *result = temp::strcpy(nullptr, "\0");
+
+        CHECK(result == nullptr);
+    }
+}
+
+TEST_CASE("strdup")
+{
+    SUBCASE("valid string")
+    {
+        const char *word = "Hello";
+        auto *copy = temp::strdup(word);
+
+        CHECK(std::strcmp(copy, word) == 0);
+    }
+
+    SUBCASE("just zerobyte")
+    {
+        auto *copy = temp::strdup("\0");
+
+        CHECK(copy[0] == '\0');
+    }
+
+    SUBCASE("nullptr")
+    {
+        auto *copy = temp::strdup(nullptr);
+
+        CHECK(copy == nullptr);
+    }
+}
+
+TEST_CASE("strcmp")
+{
+    SUBCASE("same strings")
+    {
+        const char *left = "hello";
+        const char *right = "hello";
+
+        CHECK(temp::strcmp(left, right) == 0);
+    }
+
+    SUBCASE("left longer")
+    {
+        const char *left = "hellope";
+        const char *right = "hello";
+
+        CHECK(temp::strcmp(left, right) > 0);
+    }
+
+    SUBCASE("right longer")
+    {
+        const char *left = "hello";
+        const char *right = "hellope";
+
+        CHECK(temp::strcmp(left, right) < 0);
+    }
+
+    SUBCASE("same length, different chars; should be smaller")
+    {
+        const char *left = "aaa";
+        const char *right = "zzz";
+
+        CHECK(temp::strcmp(left, right) < 0);
+    }
+
+    SUBCASE("same length, different chars; should be larger")
+    {
+        const char *left = "zzz";
+        const char *right = "aaa";
+
+        CHECK(temp::strcmp(left, right) > 0);
     }
 }
 
