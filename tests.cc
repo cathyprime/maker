@@ -1,30 +1,38 @@
 #define MAKER_UT
-#define MAKER_BUFFER_DEFAULT 10
 #define MAKER_IMPLEMENTATION
 #include "maker.hh"
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include <cstring>
+#include <string>
+#include <cstdio>
 
 using namespace maker;
 
 template<typename T>
 constexpr static inline void ignore_result(T t) {}
 
+namespace maker
+{
+    doctest::String toString(const String_View &sv)
+    {
+        char buffer[100];
+        std::sprintf(buffer, "\"%.*s\"_sv", (int)sv.len, sv.data);
+        return std::string(buffer).c_str();
+    }
+};
+
 TEST_SUITE_BEGIN("Temp_Buffer");
 TEST_CASE("Allocation"
           * doctest::description("using .alloc and .alloc_count to allocate memory"))
 {
     Temp_Buffer *buf = new Temp_Buffer{};
+    size_t offset = buf->start_size - 10;
+    const_cast<size_t&>(buf->idx) = offset;
 
-    REQUIRE(buf->idx == 0);
+    REQUIRE(buf->idx == offset);
     REQUIRE(buf->save_point == 0);
-
-    SUBCASE("Default size macro respected")
-    {
-        CHECK(buf->start_size == MAKER_BUFFER_DEFAULT);
-    }
 
     SUBCASE("")
     {
@@ -47,8 +55,8 @@ TEST_CASE("Allocation"
             char *ptr = (char*) buf->alloc(1);
             *ptr++ = 'h';
             *ptr = 'i';
-            CHECK(buf->buffer[0] == 'h');
-            CHECK(buf->buffer[1] == 'i');
+            CHECK(buf->buffer[offset + 0] == 'h');
+            CHECK(buf->buffer[offset + 1] == 'i');
         }
     }
 
@@ -74,8 +82,8 @@ TEST_CASE("Allocation"
             char *ptr = (char*) buf->alloc_count(1, 1);
             *ptr++ = 'h';
             *ptr = 'i';
-            CHECK(buf->buffer[0] == 'h');
-            CHECK(buf->buffer[1] == 'i');
+            CHECK(buf->buffer[offset + 0] == 'h');
+            CHECK(buf->buffer[offset + 1] == 'i');
         }
     }
 
@@ -90,8 +98,8 @@ TEST_CASE("Saving"
     REQUIRE(buf->idx == 0);
     REQUIRE(buf->save_point == 0);
     ignore_result(buf->alloc(5));
-    REQUIRE(buf->save_point == 0);
     REQUIRE(buf->idx == 5);
+    REQUIRE(buf->save_point == 0);
 
     SUBCASE("Save")
     {
@@ -176,7 +184,7 @@ TEST_CASE("strlen")
         CHECK(temp::strlen(word_from_literal) == 5);
     }
 
-    SUBCASE("just zerobyte")
+    SUBCASE("just zero byte")
     {
         const char *word = "\0";
         CHECK(temp::strlen(word) == 0);
@@ -199,7 +207,7 @@ TEST_CASE("strcpy")
         CHECK(std::strcmp(buffer, word) == 0);
     }
 
-    SUBCASE("just zerobyte")
+    SUBCASE("just zero byte")
     {
         const char *word = "\0";
         char buffer[5] = "xxxx";
@@ -244,7 +252,7 @@ TEST_CASE("strdup")
         CHECK(std::strcmp(copy, word) == 0);
     }
 
-    SUBCASE("just zerobyte")
+    SUBCASE("just zero byte")
     {
         auto *copy = temp::strdup("\0");
 
@@ -301,5 +309,214 @@ TEST_CASE("strcmp")
         CHECK(temp::strcmp(left, right) > 0);
     }
 }
+TEST_CASE("strncmp")
+{
+    SUBCASE("same strings")
+    {
+        const char *left = "hello";
+        const char *right = "hello";
 
+        CHECK(temp::strncmp(left, right, 5) == 0);
+    }
+
+    SUBCASE("left longer, len 5")
+    {
+        const char *left = "hellope";
+        const char *right = "hello";
+
+        CHECK(temp::strncmp(left, right, 5) == 0);
+    }
+
+    SUBCASE("left longer")
+    {
+        const char *left = "hellope";
+        const char *right = "hello";
+
+        CHECK(temp::strncmp(left, right, 8) > 0);
+    }
+
+    SUBCASE("right longer, len 5")
+    {
+        const char *left = "hello";
+        const char *right = "hellope";
+
+        CHECK(temp::strncmp(left, right, 5) == 0);
+    }
+
+    SUBCASE("right longer")
+    {
+        const char *left = "hello";
+        const char *right = "hellope";
+
+        CHECK(temp::strncmp(left, right, 8) < 0);
+    }
+
+    SUBCASE("same length, different chars; should be smaller")
+    {
+        const char *left = "aaa";
+        const char *right = "zzz";
+
+        CHECK(temp::strncmp(left, right, 3) < 0);
+    }
+
+    SUBCASE("same length, different chars; should be larger")
+    {
+        const char *left = "zzz";
+        const char *right = "aaa";
+
+        CHECK(temp::strncmp(left, right, 3) > 0);
+    }
+}
+TEST_SUITE_END();
+
+TEST_SUITE_BEGIN("String_View");
+TEST_CASE("Cstr")
+{
+    SUBCASE("from cstr")
+    {
+        SUBCASE("valid string")
+        {
+            const char *word = "hello";
+            String_View sv = word;
+            CHECK(sv.len == 5);
+            CHECK(sv.data == word);
+        }
+
+        SUBCASE("just null byte")
+        {
+            const char *word = "";
+            String_View sv = word;
+            CHECK(sv.len == 0);
+            CHECK(sv.data == word);
+        }
+
+        SUBCASE("nullptr")
+        {
+            String_View sv = nullptr;
+            CHECK(sv.len == 0);
+            CHECK(sv.data == nullptr);
+        }
+    }
+
+    SUBCASE("to cstr")
+    {
+        SUBCASE("")
+        {
+            String_View sv = "hello";
+            REQUIRE(sv.len == 5);
+            REQUIRE(sv.data != nullptr);
+
+            SUBCASE("valid string")
+            {
+                size_t start_idx = tmp_buffer.idx;
+                char *word = sv.cstr();
+                size_t after = tmp_buffer.idx;
+                CHECK(after - start_idx == 6);
+                CHECK(std::strcmp(word, "hello") == 0);
+            }
+        }
+
+        SUBCASE("")
+        {
+            String_View sv = "";
+            REQUIRE(sv.len == 0);
+            REQUIRE(sv.data != nullptr);
+
+            SUBCASE("just null byte")
+            {
+                size_t start_idx = tmp_buffer.idx;
+                char *word = sv.cstr();
+                size_t after = tmp_buffer.idx;
+                CHECK(after - start_idx == 1);
+                CHECK(std::strcmp(word, "") == 0);
+            }
+        }
+
+        SUBCASE("")
+        {
+            String_View sv = nullptr;
+            REQUIRE(sv.len == 0);
+            REQUIRE(sv.data == nullptr);
+
+            SUBCASE("nullptr")
+            {
+                size_t start_idx = tmp_buffer.idx;
+                char *word = sv.cstr();
+                size_t after = tmp_buffer.idx;
+                CHECK(after - start_idx == 0);
+                CHECK(word == nullptr);
+            }
+        }
+    }
+}
+TEST_CASE("comparison")
+{
+    String_View sv1;
+    String_View sv2;
+
+    SUBCASE("same word, same length")
+    {
+        const char *word = "hello";
+        sv1.len = 5;
+        sv1.data = word;
+        sv2.len = 5;
+        sv2.data = word;
+
+        CHECK(sv1 == sv2);
+    }
+
+    SUBCASE("same word, same length, different pointers")
+    {
+        const char *word1 = "hello";
+        const char *word2 = ::strdup("hello");
+        REQUIRE(word1 != word2);
+
+        sv1.len = 6;
+        sv2.len = 6;
+        sv1.data = word1;
+        sv2.data = word2;
+        CHECK(sv1 == sv2);
+    }
+
+    SUBCASE("different word, different lengths")
+    {
+        sv1.len = 3;
+        sv1.data = "aa";
+        sv2.len = 4;
+        sv2.data = "bbb";
+
+        CHECK_FALSE(sv1 == sv2);
+    }
+
+    SUBCASE("different word, same size")
+    {
+        sv1.len = 3;
+        sv2.len = 3;
+        sv1.data = "aa";
+        sv2.data = "bb";
+
+        CHECK_FALSE(sv1 == sv2);
+    }
+
+    SUBCASE("one nullptr")
+    {
+        const char *word = "word";
+        sv1.len = 5;
+        sv1.data = word;
+        sv2.len = 0;
+        sv2.data = nullptr;
+
+        CHECK_FALSE(sv1 == sv2);
+    }
+
+    SUBCASE("different word")
+    {
+        sv1.len = 2;
+        sv1.data = "a";
+        sv2.len = 3;
+        sv2.data = "bb";
+
+        CHECK_FALSE(sv1 == sv2);
+    }
+}
 TEST_SUITE_END();

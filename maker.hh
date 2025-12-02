@@ -8,6 +8,15 @@
 
 namespace maker
 {
+    namespace temp
+    {
+        size_t strlen(const char *str);
+        char *strcpy(char *dest, const char *str);
+        char *strdup(const char *str);
+        int strcmp(const char *lhs, const char *rhs);
+        int strncmp(const char *lhs, const char *rhs, size_t n);
+    }
+
     struct Command
     {
         char **items = nullptr;
@@ -33,19 +42,19 @@ namespace maker
 
     struct String_View
     {
-        char *data = nullptr;
+        const char *data = nullptr;
         size_t len = 0;
-        static String_View from_cstr();
+
+        String_View() = default;
+        String_View(const char *cstr);
+        bool operator==(const String_View &other) const;
+        bool operator!=(const String_View &other) const;
+
+        String_View(const String_View &rhs) = default;
+        String_View(String_View&&) = delete;
+
         char *cstr() const;
     };
-
-    namespace temp
-    {
-        size_t strlen(const char *str);
-        char *strcpy(char *dest, const char *str);
-        char *strdup(const char *str);
-        int strcmp(const char *lhs, const char *rhs);
-    }
 } // maker
 
 #ifdef MAKER_IMPLEMENTATION
@@ -155,6 +164,48 @@ int maker::temp::strcmp(const char *left, const char *right)
         right++;
     }
     return *(unsigned char*)left - *(unsigned char*)right;
+}
+
+int maker::temp::strncmp(const char *left, const char *right, size_t n)
+{
+    if (n == 0) return 0;
+
+    while (n-- > 0 && *left && (*left == *right))
+    {
+        if (n == 0)
+            return 0;
+        left++;
+        right++;
+    }
+
+    return *(const unsigned char*)left - *(const unsigned char*)right;
+}
+
+maker::String_View::String_View(const char *cstr)
+    : data(cstr)
+    , len(temp::strlen(cstr))
+{}
+
+char *maker::String_View::cstr() const
+{
+    if (!data) return nullptr;
+    char *ret = static_cast<char *>(maker::tmp_buffer.alloc(len + 1));
+    for (size_t idx = 0; idx < len; ++idx)
+        ret[idx] = data[idx];
+    ret[len + 1] = '\0';
+    return ret;
+}
+
+bool maker::String_View::operator==(const String_View &other) const
+{
+    if (len != other.len) return false;
+    if (data == other.data) return true;
+    return temp::strncmp(data, other.data, len) == 0;
+}
+
+bool maker::String_View::operator!=(const String_View &other) const
+{
+    return !(*this == other);
 }
 
 #endif
