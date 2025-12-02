@@ -5,7 +5,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include <cstring>
-#include <string>
 #include <cstdio>
 
 using namespace maker;
@@ -13,13 +12,22 @@ using namespace maker;
 template<typename T>
 constexpr static inline void ignore_result(T t) {}
 
+template<typename F>
+inline void assert_alloc_delta(int delta, F f)
+{
+    size_t before = tmp_buffer.idx;
+    f();
+    size_t after = tmp_buffer.idx;
+    CHECK(after - before == delta);
+}
+
 namespace maker
 {
     doctest::String toString(const String_View &sv)
     {
         char buffer[100];
         std::sprintf(buffer, "\"%.*s\"_sv", (int)sv.len, sv.data);
-        return std::string(buffer).c_str();
+        return doctest::String(buffer).c_str();
     }
 };
 
@@ -34,57 +42,26 @@ TEST_CASE("Allocation"
     REQUIRE(buf->idx == offset);
     REQUIRE(buf->save_point == 0);
 
-    SUBCASE("")
+    SUBCASE("Allocation out of range dies")
     {
-        SUBCASE("Allocation out of range returns nullptr")
-        {
-            void *ptr = buf->alloc(11);
-            CHECK(ptr == nullptr);
-        }
-
-        SUBCASE("Allocation moves idx by requsted size")
-        {
-            size_t sz = 5;
-            size_t idx_start = buf->idx;
-            ignore_result(buf->alloc(sz));
-            CHECK(buf->idx == idx_start + sz);
-        }
-
-        SUBCASE("Allocated memory in buffer")
-        {
-            char *ptr = (char*) buf->alloc(1);
-            *ptr++ = 'h';
-            *ptr = 'i';
-            CHECK(buf->buffer[offset + 0] == 'h');
-            CHECK(buf->buffer[offset + 1] == 'i');
-        }
+        CHECK_THROWS(buf->alloc(11));
     }
 
-    SUBCASE("")
+    SUBCASE("Allocation moves idx by requsted size")
     {
-        SUBCASE("Allocation out of range returns nullptr")
-        {
-            void *ptr = buf->alloc_count(3, 5);
-            CHECK(ptr == nullptr);
-        }
+        size_t sz = 5;
+        size_t idx_start = buf->idx;
+        ignore_result(buf->alloc(sz));
+        CHECK(buf->idx == idx_start + sz);
+    }
 
-        SUBCASE("Allocation moves idx by requsted size")
-        {
-            size_t sz = 3;
-            size_t count = 2;
-            size_t idx_start = buf->idx;
-            ignore_result(buf->alloc_count(count, sz));
-            CHECK(buf->idx == idx_start + (count * sz));
-        }
-
-        SUBCASE("Allocated memory in buffer")
-        {
-            char *ptr = (char*) buf->alloc_count(1, 1);
-            *ptr++ = 'h';
-            *ptr = 'i';
-            CHECK(buf->buffer[offset + 0] == 'h');
-            CHECK(buf->buffer[offset + 1] == 'i');
-        }
+    SUBCASE("Allocated memory in buffer")
+    {
+        char *ptr = (char*) buf->alloc(1);
+        *ptr++ = 'h';
+        *ptr = 'i';
+        CHECK(buf->buffer[offset + 0] == 'h');
+        CHECK(buf->buffer[offset + 1] == 'i');
     }
 
     delete buf;
@@ -127,13 +104,17 @@ TEST_CASE("Resize"
 
     SUBCASE("Initial resize")
     {
-        cmd.resize();
+        assert_alloc_delta(4, [&] {
+            cmd.resize();
+        });
         CHECK(cmd.capacity == 4);
         CHECK(cmd.items != nullptr);
 
         SUBCASE("Subsequent resize")
         {
-            cmd.resize();
+            assert_alloc_delta(8, [&] {
+                cmd.resize();
+            });
             CHECK(cmd.capacity == 8);
             CHECK(cmd.items != nullptr);
         }
@@ -148,12 +129,13 @@ TEST_CASE("Push"
 
     SUBCASE("First push will resize")
     {
-        cmd.push(word);
+        assert_alloc_delta(4, [&] {
+            cmd.push(word);
+        });
         CHECK(cmd.capacity == 4);
         CHECK(cmd.length == 1);
-        CHECK(*cmd.items == (char*)word);
 
-        SUBCASE("Many resizes")
+        SUBCASE("Many pushes")
         {
             cmd.push(word);
             cmd.push(word);
@@ -161,7 +143,9 @@ TEST_CASE("Push"
             REQUIRE(cmd.capacity == 4);
             REQUIRE(cmd.length == 4);
 
-            cmd.push(word);
+            assert_alloc_delta(8, [&] {
+                cmd.push(word);
+            });
             CHECK(cmd.capacity == 8);
             CHECK(cmd.length == 5);
         }
@@ -370,6 +354,65 @@ TEST_CASE("strncmp")
 TEST_SUITE_END();
 
 TEST_SUITE_BEGIN("String_View");
+TEST_CASE("Manipulating")
+{
+    String_View sv = "  hello  ";
+
+    SUBCASE("Trim")
+    {
+        CAPTURE(sv);
+        auto cpy = sv.trim();
+        CAPTURE(cpy);
+        CHECK(cpy.len == 5);
+        CHECK(std::strncmp(cpy.data, "hello", 5) == 0);
+    }
+
+    SUBCASE("Left")
+    {
+        CAPTURE(sv);
+        auto cpy = sv.trim_left();
+        CAPTURE(cpy);
+        CHECK(cpy.len == 7);
+        CHECK(std::strncmp(cpy.data, "hello  ", 5) == 0);
+    }
+
+    SUBCASE("Right")
+    {
+        CAPTURE(sv);
+        auto cpy = sv.trim_right();
+        CAPTURE(cpy);
+        CHECK(cpy.len == 7);
+        CHECK(std::strncmp(cpy.data, "  hello", 7) == 0);
+    }
+
+    SUBCASE("Chop")
+    {
+        auto cpy = sv.chop('l');
+
+        CAPTURE(cpy);
+        CAPTURE(sv);
+
+        CHECK(cpy.len == 4);
+        CHECK(std::strncmp(cpy.data, "  he", 4) == 0);
+
+        CHECK(sv.len == 4);
+        CHECK(std::strncmp(sv.data, "lo  ", 4) == 0);
+    }
+
+    SUBCASE("Chop left")
+    {
+        auto cpy = sv.chop_left(5);
+
+        CAPTURE(cpy);
+        CAPTURE(sv);
+
+        CHECK(cpy.len == 5);
+        CHECK(std::strncmp(cpy.data, "  hel", 5) == 0);
+
+        CHECK(sv.len == 4);
+        CHECK(std::strncmp(sv.data, "lo  ", 4) == 0);
+    }
+}
 TEST_CASE("Cstr")
 {
     SUBCASE("from cstr")
@@ -408,10 +451,10 @@ TEST_CASE("Cstr")
 
             SUBCASE("valid string")
             {
-                size_t start_idx = tmp_buffer.idx;
-                char *word = sv.cstr();
-                size_t after = tmp_buffer.idx;
-                CHECK(after - start_idx == 6);
+                char *word;
+                assert_alloc_delta(6, [&] {
+                    word = sv.cstr();
+                });
                 CHECK(std::strcmp(word, "hello") == 0);
             }
         }
@@ -424,10 +467,10 @@ TEST_CASE("Cstr")
 
             SUBCASE("just null byte")
             {
-                size_t start_idx = tmp_buffer.idx;
-                char *word = sv.cstr();
-                size_t after = tmp_buffer.idx;
-                CHECK(after - start_idx == 1);
+                char *word;
+                assert_alloc_delta(1, [&] {
+                    word = sv.cstr();
+                });
                 CHECK(std::strcmp(word, "") == 0);
             }
         }
@@ -440,10 +483,10 @@ TEST_CASE("Cstr")
 
             SUBCASE("nullptr")
             {
-                size_t start_idx = tmp_buffer.idx;
-                char *word = sv.cstr();
-                size_t after = tmp_buffer.idx;
-                CHECK(after - start_idx == 0);
+                char *word;
+                assert_alloc_delta(0, [&] {
+                    word = sv.cstr();
+                });
                 CHECK(word == nullptr);
             }
         }
@@ -467,8 +510,8 @@ TEST_CASE("comparison")
 
     SUBCASE("same word, same length, different pointers")
     {
-        const char *word1 = "hello";
-        const char *word2 = ::strdup("hello");
+        char word1[] = "hello";
+        char word2[] = "hello";
         REQUIRE(word1 != word2);
 
         sv1.len = 6;
@@ -517,6 +560,97 @@ TEST_CASE("comparison")
         sv2.data = "bb";
 
         CHECK_FALSE(sv1 == sv2);
+    }
+}
+
+TEST_SUITE_END();
+
+TEST_SUITE_BEGIN("String_Builder");
+TEST_CASE("Resize sb"
+          * doctest::description("Resizing the internal buffer"))
+{
+    String_Builder sb;
+    REQUIRE(sb.len == 0);
+    REQUIRE(sb.cap == 0);
+
+    SUBCASE("Initial resize")
+    {
+        assert_alloc_delta(4, [&] {
+            sb.resize();
+        });
+        CHECK(sb.cap == 4);
+        CHECK(sb.data != nullptr);
+
+        SUBCASE("Subsequent resize")
+        {
+            assert_alloc_delta(8, [&] {
+                sb.resize();
+            });
+            CHECK(sb.cap == 8);
+            CHECK(sb.data != nullptr);
+        }
+    }
+}
+
+TEST_CASE("Push sb")
+{
+    SUBCASE("char once")
+    {
+        String_Builder sb;
+        assert_alloc_delta(4, [&] {
+            sb.push('c');
+        });
+
+        SUBCASE("char many")
+        {
+            REQUIRE(sb.len == 1);
+            REQUIRE(sb.cap == 4);
+
+            sb.push('h');
+            sb.push('a');
+            sb.push('r');
+
+            assert_alloc_delta(8, [&] {
+                sb.push('r');
+            });
+        }
+    }
+
+    SUBCASE("nullptr")
+    {
+        String_Builder sb;
+        assert_alloc_delta(0, [&]{
+            sb.push(nullptr);
+        });
+
+        CHECK(sb.cap == 0);
+        CHECK(sb.len == 0);
+        CHECK(sb.data == nullptr);
+
+        SUBCASE("valid string")
+        {
+            assert_alloc_delta(12, [&] {
+                sb.push("hello");
+            });
+
+            CHECK(sb.len == 5);
+            CHECK(std::strncmp(sb.data, "hello", 5) == 0);
+
+            SUBCASE("join")
+            {
+                sb.push(' ');
+                assert_alloc_delta(16, [&] {
+                    sb.push("world");
+                });
+                CHECK(std::strncmp(sb.data, "hello world", 11) == 0);
+
+                SUBCASE("to sv")
+                {
+                    auto sv = sb.to_sv();
+                    CHECK(std::strncmp(sv.data, sb.data, sb.len) == 0);
+                }
+            }
+        }
     }
 }
 TEST_SUITE_END();
