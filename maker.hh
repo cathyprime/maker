@@ -2,7 +2,11 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <stdio.h>
+#include <spawn.h>
 #include <ctype.h>
+#include <sys/wait.h>
+
+extern "C" char **environ;
 
 #ifndef MAKER_BUFFER_DEFAULT
 #define MAKER_BUFFER_DEFAULT 8 * 1024
@@ -18,7 +22,7 @@ namespace maker
 {
     namespace temp
     {
-        size_t strlen(const char *str);
+        constexpr size_t strlen(const char *str);
         char *strcpy(char *dest, const char *str);
         char *strdup(const char *str);
         int strcmp(const char *lhs, const char *rhs);
@@ -26,14 +30,22 @@ namespace maker
         int memcmp(const void *left, const void *right, size_t count);
     }
 
+    struct Proc
+    {
+        pid_t pid = 0;
+        void wait() const;
+    };
+
     struct Command
     {
         char **items = nullptr;
         size_t length = 0;
         size_t capacity = 0;
 
-        void push(char*);
+        Command &push(char*);
+        Command &push_null();
         void resize();
+        void reset();
     };
 
     struct Temp_Buffer
@@ -78,14 +90,37 @@ namespace maker
         String_Builder() = default;
 
         String_View to_sv() const;
-        void push(char c);
-        void push(const char *str);
+        String_Builder &push(char c);
+        String_Builder &push(const char *str);
+        String_Builder &push_null();
         void resize();
     };
 
+    Proc start_process(const Command &cmd);
 } // maker
 
 #ifdef MAKER_IMPLEMENTATION
+
+maker::Proc maker::start_process(const Command &cmd)
+{
+    using namespace maker;
+
+    Proc proc;
+
+    ASSERT(
+        posix_spawnp(&proc.pid, cmd.items[0], nullptr, nullptr, cmd.items, environ) == 0,
+        "spawnp_failed"
+    );
+
+    return proc;
+}
+
+void maker::Proc::wait() const
+{
+    if (pid == 0) return;
+    int status;
+    waitpid(pid, &status, 0);
+}
 
 thread_local char maker::Temp_Buffer::buffer[];
 thread_local maker::Temp_Buffer maker::tmp_buffer;
@@ -137,21 +172,27 @@ void maker::Command::resize()
     if (capacity == 0)
     {
         capacity = 4;
-        items = (char **) tmp_buffer.alloc(4);
+        items = (char **) tmp_buffer.alloc(4 * sizeof(char*));
         return;
     }
 
-    items = (char **)tmp_buffer.resize_buffer(items, capacity, capacity * 2);
+    items = (char **)tmp_buffer.resize_buffer(items, capacity * sizeof(char*), capacity * 2 * sizeof(char*));
     capacity *= 2;
 }
 
-void maker::Command::push(char *cmd)
+maker::Command &maker::Command::push(char *cmd)
 {
     if (length >= capacity || capacity == 0) resize();
     items[length++] = cmd;
+    return *this;
 }
 
-size_t maker::temp::strlen(const char *str)
+maker::Command &maker::Command::push_null()
+{
+    return push(nullptr);
+}
+
+constexpr size_t maker::temp::strlen(const char *str)
 {
     if (!str) return 0;
     const char *seeker = str;
@@ -182,7 +223,7 @@ int maker::temp::strcmp(const char *left, const char *right)
         left++;
         right++;
     }
-    return *(unsigned char*)left - *(unsigned char*)right;
+    return *(const unsigned char*)left - *(const unsigned char*)right;
 }
 
 int maker::temp::strncmp(const char *left, const char *right, size_t n)
@@ -318,15 +359,16 @@ void maker::String_Builder::resize()
     cap *= 2;
 }
 
-void maker::String_Builder::push(char c)
+maker::String_Builder &maker::String_Builder::push(char c)
 {
     if (len >= cap) resize();
     data[len++] = c;
+    return *this;
 }
 
-void maker::String_Builder::push(const char *str)
+maker::String_Builder &maker::String_Builder::push(const char *str)
 {
-    if (!str) return;
+    if (!str) return *this;
 
     size_t str_len = temp::strlen(str);
     for (size_t i = 0; i < str_len; ++i)
@@ -334,6 +376,7 @@ void maker::String_Builder::push(const char *str)
         if (len >= cap) resize();
         data[len++] = str[i];
     }
+    return *this;
 }
 
 maker::String_View maker::String_Builder::to_sv() const

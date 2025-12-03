@@ -12,14 +12,14 @@ using namespace maker;
 template<typename T>
 constexpr static inline void ignore_result(T t) {}
 
-template<typename F>
-inline void assert_alloc_delta(int delta, F f)
-{
-    size_t before = tmp_buffer.idx;
-    f();
-    size_t after = tmp_buffer.idx;
-    CHECK(after - before == delta);
-}
+#define assert_alloc_delta(f, expected) \
+do {                                    \
+    size_t before = tmp_buffer.idx;     \
+    f;                                  \
+    size_t after = tmp_buffer.idx;      \
+    size_t delta = after - before;      \
+    CHECK_MESSAGE(delta == expected, #f, " allocated ", delta, " bytes instead of ", expected, " bytes"); \
+} while (0)
 
 namespace maker
 {
@@ -104,17 +104,13 @@ TEST_CASE("Resize"
 
     SUBCASE("Initial resize")
     {
-        assert_alloc_delta(4, [&] {
-            cmd.resize();
-        });
+        assert_alloc_delta(cmd.resize(), 32);
         CHECK(cmd.capacity == 4);
         CHECK(cmd.items != nullptr);
 
         SUBCASE("Subsequent resize")
         {
-            assert_alloc_delta(8, [&] {
-                cmd.resize();
-            });
+            assert_alloc_delta(cmd.resize(), 64);
             CHECK(cmd.capacity == 8);
             CHECK(cmd.items != nullptr);
         }
@@ -129,9 +125,7 @@ TEST_CASE("Push"
 
     SUBCASE("First push will resize")
     {
-        assert_alloc_delta(4, [&] {
-            cmd.push(word);
-        });
+        assert_alloc_delta(cmd.push(word), 32);
         CHECK(cmd.capacity == 4);
         CHECK(cmd.length == 1);
 
@@ -143,9 +137,7 @@ TEST_CASE("Push"
             REQUIRE(cmd.capacity == 4);
             REQUIRE(cmd.length == 4);
 
-            assert_alloc_delta(8, [&] {
-                cmd.push(word);
-            });
+            assert_alloc_delta(cmd.push(word), 64);
             CHECK(cmd.capacity == 8);
             CHECK(cmd.length == 5);
         }
@@ -452,9 +444,7 @@ TEST_CASE("Cstr")
             SUBCASE("valid string")
             {
                 char *word;
-                assert_alloc_delta(6, [&] {
-                    word = sv.cstr();
-                });
+                assert_alloc_delta(word = sv.cstr(), 6);
                 CHECK(std::strcmp(word, "hello") == 0);
             }
         }
@@ -468,9 +458,7 @@ TEST_CASE("Cstr")
             SUBCASE("just null byte")
             {
                 char *word;
-                assert_alloc_delta(1, [&] {
-                    word = sv.cstr();
-                });
+                assert_alloc_delta(word = sv.cstr(), 1);
                 CHECK(std::strcmp(word, "") == 0);
             }
         }
@@ -484,9 +472,7 @@ TEST_CASE("Cstr")
             SUBCASE("nullptr")
             {
                 char *word;
-                assert_alloc_delta(0, [&] {
-                    word = sv.cstr();
-                });
+                assert_alloc_delta(word = sv.cstr(), 0);
                 CHECK(word == nullptr);
             }
         }
@@ -575,17 +561,13 @@ TEST_CASE("Resize sb"
 
     SUBCASE("Initial resize")
     {
-        assert_alloc_delta(4, [&] {
-            sb.resize();
-        });
+        assert_alloc_delta(sb.resize(), 4);
         CHECK(sb.cap == 4);
         CHECK(sb.data != nullptr);
 
         SUBCASE("Subsequent resize")
         {
-            assert_alloc_delta(8, [&] {
-                sb.resize();
-            });
+            assert_alloc_delta(sb.resize(), 8);
             CHECK(sb.cap == 8);
             CHECK(sb.data != nullptr);
         }
@@ -597,9 +579,7 @@ TEST_CASE("Push sb")
     SUBCASE("char once")
     {
         String_Builder sb;
-        assert_alloc_delta(4, [&] {
-            sb.push('c');
-        });
+        assert_alloc_delta(sb.push('c'), 4);
 
         SUBCASE("char many")
         {
@@ -610,18 +590,14 @@ TEST_CASE("Push sb")
             sb.push('a');
             sb.push('r');
 
-            assert_alloc_delta(8, [&] {
-                sb.push('r');
-            });
+            assert_alloc_delta(sb.push('r'), 8);
         }
     }
 
     SUBCASE("nullptr")
     {
         String_Builder sb;
-        assert_alloc_delta(0, [&]{
-            sb.push(nullptr);
-        });
+        assert_alloc_delta(sb.push(nullptr), 0);
 
         CHECK(sb.cap == 0);
         CHECK(sb.len == 0);
@@ -629,9 +605,7 @@ TEST_CASE("Push sb")
 
         SUBCASE("valid string")
         {
-            assert_alloc_delta(12, [&] {
-                sb.push("hello");
-            });
+            assert_alloc_delta(sb.push("hello"), 12);
 
             CHECK(sb.len == 5);
             CHECK(std::strncmp(sb.data, "hello", 5) == 0);
@@ -639,9 +613,7 @@ TEST_CASE("Push sb")
             SUBCASE("join")
             {
                 sb.push(' ');
-                assert_alloc_delta(16, [&] {
-                    sb.push("world");
-                });
+                assert_alloc_delta(sb.push("world"), 16);
                 CHECK(std::strncmp(sb.data, "hello world", 11) == 0);
 
                 SUBCASE("to sv")
